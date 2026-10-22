@@ -14,6 +14,7 @@ Action types (config.json → "action": {...}):
   shell        {"command": "…", "hidden": true}      cmd.exe (macOS / Linux: sh)
   powershell   {"script": "…"}                       Windows PowerShell (macOS / Linux: pwsh, if installed)
   python       {"code": "…"}                         runs in its own process
+  assist       {}                                    screen assist: an AI answers what's on screen (assist.py)
 """
 from __future__ import annotations
 
@@ -50,7 +51,11 @@ ACTION_TYPES = {
     "shell": "Run a command",
     "powershell": "Run a PowerShell script",
     "python": "Run Python code",
+    "assist": "Solve what's on screen (AI)",
 }
+
+ASSIST_ITEM = {"name": "Screen assist", "subtitle": "Answer what's on screen", "glyph": "E897", "tint": "#BF5AF2",
+               "action": {"type": "assist"}}
 
 WINDOWS_ITEMS = [
     {"name": "Browser", "subtitle": "Open your browser", "glyph": "E774", "tint": "#0A84FF",
@@ -157,6 +162,15 @@ DEFAULT_CONFIG = {
     },
     "integrations": {"obs": {"host": "localhost", "port": 4455}},
     "camera": {"preferred": ""},
+    "assist": {                  # screen assist (assist.py)
+        "provider": "gemini",    # gemini | groq | openrouter | ollama | openai
+        "models": {},            # provider → model ('' = its free default)
+        "urls": {},              # provider → API address ('' = its default)
+        "keys": {},              # provider → API key, encrypted like the OBS password
+        "seconds": 20,           # how long the answer stays on the notch
+        # win+alt+a | ctrl+alt+a | ctrl+shift+a | off. Not Ctrl + Alt + a letter on Windows: that's AltGr there.
+        "hotkey": "ctrl+alt+a" if MAC else "win+alt+a",
+    },
 }
 
 MEDIA_PRESETS = {
@@ -449,7 +463,7 @@ def execute(action: dict, cfg: dict | None = None) -> None:
     elif kind == "python":
         args, err = python_command(action.get("code", ""), cfg)
         _run_checked(args, "Python", err_file=err)
-    elif kind in ("quicknav", "back"):
-        raise ValueError("opens inside the rotary")
+    elif kind in ("quicknav", "back", "assist"):
+        raise ValueError("runs inside Gesture Rotary")
     else:
         raise ValueError(f"unknown action type '{kind}'")

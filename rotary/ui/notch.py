@@ -6,7 +6,10 @@ timer counting down, or Medal recording a game — plus tiny dots when an app us
 or the camera (green). Short status messages (a clip was saved, an app launched…) slide in and out.
 
 Hover it for the details (now playing: art, title, progress and ⏮ ⏯ ⏭). Click it, or scroll on it, to open
-the rotary. Right-click for timers and to customise what it shows.
+the rotary. Right-click for timers, screen assist and to customise what it shows.
+
+Screen assist's answers stay on it for a while: the option to pick ("B") in a badge and a short answer;
+hover for the explanation, Copy and Dismiss.
 """
 from __future__ import annotations
 
@@ -26,6 +29,7 @@ from .glass import ICONS, TEXT, Spring, black, exclude_from_capture, font, grab_
 GREEN, AMBER, RED, BLUE, GRAY, ORANGE = "#30D158", "#FF9F0A", "#FF453A", "#0A84FF", "#8E8E93", "#FF9F0A"
 G_PREV, G_PLAY, G_PAUSE, G_NEXT, G_TIMER, G_MUSIC = "", "", "", "", "", ""
 G_PHONE, G_MIC, G_DEAFEN = "\uE717", "\uE720", "\uE74F"
+G_CHECK, G_CLOSE = "\uE73E", "\uE711"
 # What the call card's buttons press in each app (its own shortcuts).
 CALL_BUTTONS = {"Discord": [("mute", "Mute"), ("deafen", "Deafen")], "Teams": [("mute", "Mute")],
                 "Zoom": [("mute", "Mute")]}
@@ -69,6 +73,7 @@ class NotchWindow(QWidget):
     timer_done = Signal()
     call_command = Signal(str, str)  # (app, "mute" | "deafen")
     customize = Signal()             # "Customise the notch…" from its menu
+    assist = Signal()                # "Solve what's on screen" from its menu
 
     # Base geometry in logical px at the default text size: (width, height, bottom corner radius).
     COLLAPSED = (188.0, 30.0, 13.0)
@@ -78,6 +83,7 @@ class NotchWindow(QWidget):
     MEDIA_CARD = (440.0, 96.0, 30.0)
     TIMER_CARD = (300.0, 64.0, 26.0)
     CALL_CARD = (330.0, 64.0, 26.0)
+    ANSWER_CARD = (460.0, 150.0, 28.0)   # width, tallest, radius (the height follows the text)
     MAX_W = 560.0
     MARGIN = 14.0
     SHOULDER = 8.0
@@ -122,6 +128,11 @@ class NotchWindow(QWidget):
         self.timer_total = 0.0
         self._buttons: dict[str, QRectF] = {}     # clickable parts of the hover card
         self._hover_button = ""
+        self.answer: tuple[str, str, str] | None = None     # screen assist: (choice, answer, detail)
+        self._copied_until = 0.0
+        self._answer_timer = QTimer(self)
+        self._answer_timer.setSingleShot(True)
+        self._answer_timer.timeout.connect(self._answer_expired)
 
         self.w_s = Spring(self.COLLAPSED[0], 380.0, 30.0)
         self.h_s = Spring(self.COLLAPSED[1], 380.0, 30.0)
@@ -255,6 +266,40 @@ class NotchWindow(QWidget):
     def timer_left(self) -> float:
         return max(0.0, self.timer_end - time.monotonic()) if self.timer_end is not None else 0.0
 
+    # -- screen assist
+    def show_answer(self, choice: str, text: str, detail: str = "", seconds: float = 20.0) -> None:
+        """Keep an answer on the notch for `seconds` (hovering it keeps it there; clicking dismisses it)."""
+        self.answer = (choice, text, detail)
+        self._answer_timer.start(int(max(3.0, seconds) * 1000))
+        self._retarget()
+
+    def clear_answer(self) -> None:
+        self._answer_timer.stop()
+        if self.answer is not None:
+            self.answer = None
+            self._retarget()
+
+    def _answer_expired(self) -> None:
+        if self.hovered:
+            self._answer_timer.start(4000)           # still being read: wait for the mouse to leave
+        else:
+            self.clear_answer()
+
+    def answer_headline(self) -> str:
+        if self.answer is None:
+            return ""
+        choice, text, _detail = self.answer
+        return f"{choice} · {text}" if choice and text else choice or text
+
+    def copy_answer(self) -> None:
+        if self.answer is None:
+            return
+        choice, text, _detail = self.answer
+        QGuiApplication.clipboard().setText(text or choice)
+        self._copied_until = time.monotonic() + 1.5
+        QTimer.singleShot(1600, self.update)
+        self.update()
+
     # ------------------------------------------------------------------ what to show
     def media(self) -> NowPlaying | None:
         m = self.live.media
@@ -293,6 +338,8 @@ class NotchWindow(QWidget):
 
     def _card_kind(self) -> str:
         """Which detailed card a hover shows ('' = the small 'Rotary' chip)."""
+        if self.hovered and self.answer is not None:
+            return "answer"
         if not self.hovered or self.status_text or self.status_progress is not None:
             return ""
         act = self.activity()
@@ -301,7 +348,7 @@ class NotchWindow(QWidget):
     # ------------------------------------------------------------------ geometry
     def _resize_window(self) -> None:
         w = int(math.ceil((self.MAX_W + 2 * self.MARGIN) * self.s))
-        h = int(math.ceil((self.MEDIA_CARD[1] + self.MARGIN) * self.s))
+        h = int(math.ceil((max(self.MEDIA_CARD[1], self.ANSWER_CARD[1]) + self.MARGIN) * self.s))
         if (w, h) != (self.width(), self.height()):
             self.resize(w, h)
             self._glass_key = None
@@ -340,13 +387,39 @@ class NotchWindow(QWidget):
         floor =self.COLLAPSED[0] * s + (52 * s if act else 0.0)      # an activity spreads the island out
         return max(floor, centre + 2 * side + 2 * 16 * s)
 
+    def _answer_layout(self, w: float) -> tuple[float, float, float]:
+        """Screen assist's hover card for a body `w` wide: (answer text height, detail height, card height)."""
+        s = self.s
+        _choice, text, detail = self.answer or ("", "", "")
+        flags = int(Qt.TextFlag.TextWordWrap)
+        lead = self._answer_lead()
+        tw = w - lead - 16 * s - 112 * s
+        th = self._font("text", 14 * self.k, QFont.Weight.DemiBold)[1].boundingRect(
+            QRectF(0, 0, max(40.0, tw), 1000), flags, text).height() if text else 0.0
+        th = min(th, 3 * self._font("text", 14 * self.k, QFont.Weight.DemiBold)[1].height())
+        dh = self._font("text", 12 * self.k, QFont.Weight.Normal)[1].boundingRect(
+            QRectF(0, 0, max(40.0, w - lead - 16 * s), 1000), flags, detail).height() if detail else 0.0
+        h = 14 * s + max(30 * s, th) + (8 * s + dh if detail else 0.0) + 16 * s
+        return th, dh, max(64 * s, min(self.ANSWER_CARD[1] * s, h))
+
+    def _answer_lead(self) -> float:
+        """Where the hover card's text starts: after the badge (a 15 px circle, wider for "A, C")."""
+        return (16 + 30 + 12) * self.s + self._badge_extra() * 1.5
+
     def _target(self) -> tuple[float, float, float, float]:
         s = self.s
+        card = self._card_kind()
+        if card == "answer":
+            w, _h, r = self.ANSWER_CARD
+            return w * s, self._answer_layout(w * s)[2], r * s, 1.0
+        if self.answer is not None:
+            h = self.STATUS_H * s
+            w = 44 * s + self._badge_extra() + self._text_width(self.answer_headline()) + 22
+            return min(self.MAX_W * s, max(self.COLLAPSED[0] * s, w)), h, h / 2 - 2, 0.0
         if self.status_text or self.status_progress is not None:
             h = self.STATUS_H * s
             w = (40 * s + self._text_width(self.status_text) + 22) if self.status_text else 120 * s
             return min(self.MAX_W * s, max(self.COLLAPSED[0] * s, w)), h, h / 2 - 2, 0.0
-        card = self._card_kind()
         if card == "media":
             w, h, r = self.MEDIA_CARD
             return w * s, h * s, r * s, 1.0
@@ -465,6 +538,7 @@ class NotchWindow(QWidget):
 
     def hideEvent(self, ev) -> None:
         super().hideEvent(ev)
+        self.hovered = False             # no leave event comes for a window that's hidden under the mouse
         self._timer.stop()
         self._bd_timer.stop()
         if self.timer_end is None:
@@ -596,6 +670,8 @@ class NotchWindow(QWidget):
                 self._paint_timer_card(p, rect)
             elif kind == "call":
                 self._paint_call_card(p, rect)
+            elif kind == "answer":
+                self._paint_answer_card(p, rect)
         p.restore()
 
     _last_card = ""
@@ -609,6 +685,15 @@ class NotchWindow(QWidget):
         text = self._shown_text()
         tf, fm = self._font("text", 13.5 * self.k, QFont.Weight.DemiBold)
         f = max(0.0, min(1.0, self.fade.value))
+        if self.answer is not None:
+            self._badge(p, QPointF(rect.left() + 20 * s + self._badge_extra() / 2, cy), 10 * s)
+            tx = rect.left() + 38 * s + self._badge_extra()
+            area = QRectF(tx, rect.top(), rect.right() - tx - 12, h)
+            p.setFont(tf)
+            p.setPen(white(0.97))
+            p.drawText(area, Qt.AlignmentFlag.AlignVCenter,
+                       fm.elidedText(self.answer_headline(), Qt.TextElideMode.ElideRight, area.width()))
+            return
         if text or (self._prev_text and f < 1):
             ic = QPointF(rect.left() + 20 * s, cy)
             if self.status_text or self.status_progress is not None:
@@ -843,6 +928,63 @@ class NotchWindow(QWidget):
         self._button(p, "timer_add", QRectF(rect.right() - 16 * s - 64 * s - 8 * s - 60 * s, cy - bh / 2, 60 * s, bh),
                      "", text="+1 min")
 
+    def _badge_extra(self) -> float:
+        """How much wider than a circle the answer's badge is (long labels like "A, C" make a pill)."""
+        choice = self.answer[0] if self.answer else ""
+        if len(choice) <= 2:
+            return 0.0
+        return max(0.0, self._font("text", 11 * self.k, QFont.Weight.Bold)[1].horizontalAdvance(choice) - 12 * self.s)
+
+    def _badge(self, p: QPainter, c: QPointF, rr: float, extra: float = -1.0) -> None:
+        """The answer's badge: the option to pick ("B") on blue, or a tick on green for a plain answer."""
+        choice = self.answer[0] if self.answer else ""
+        extra = self._badge_extra() * rr / (10 * self.s) if extra < 0 else extra
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(c.x() - rr - extra / 2, c.y() - rr, 2 * rr + extra, 2 * rr), rr, rr)
+        p.fillPath(path, QColor(BLUE if choice else GREEN))
+        r = path.boundingRect()
+        p.setPen(white(1.0))
+        if choice:
+            px = rr * (1.15 if len(choice) == 1 else 0.95) if len(choice) <= 2 else 1.1 * self.k * rr / self.s
+            p.setFont(self._font("text", px, QFont.Weight.Bold)[0])
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, choice)
+        else:
+            p.setFont(self._font("icons", rr * 1.05, QFont.Weight.Bold)[0])
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, G_CHECK)
+
+    def _paint_answer_card(self, p: QPainter, rect: QRectF) -> None:
+        if self.answer is None:
+            return
+        self._last_card = "answer"
+        s = self.s
+        _choice, text, detail = self.answer
+        th, dh, _h = self._answer_layout(rect.width())
+        top = rect.top() + 14 * s
+        rr = 15 * s
+        extra = self._badge_extra() * 1.5
+        self._badge(p, QPointF(rect.left() + 16 * s + rr + extra / 2, top + rr), rr, extra)
+        x = rect.left() + self._answer_lead()
+        right = rect.right() - 16 * s
+        flags = int(Qt.TextFlag.TextWordWrap)
+        tf, tfm = self._font("text", 14 * self.k, QFont.Weight.DemiBold)
+        p.setFont(tf)
+        p.setPen(white(0.97))
+        title_h = max(2 * rr, th)
+        p.drawText(QRectF(x, top + (title_h - th) / 2, right - 112 * s - x, th + 1),
+                   flags | int(Qt.AlignmentFlag.AlignLeft), text)
+        if detail:
+            sf, _sfm = self._font("text", 12 * self.k, QFont.Weight.Normal)
+            p.setFont(sf)
+            p.setPen(white(0.66))
+            p.drawText(QRectF(x, top + title_h + 8 * s, right - x, dh + 1), flags | int(Qt.AlignmentFlag.AlignLeft),
+                       detail)
+        bh = 28 * s
+        self._button(p, "answer_close", QRectF(right - bh, top + rr - bh / 2, bh, bh), G_CLOSE)
+        copied = time.monotonic() < self._copied_until
+        bw = self._text_width("Copied", 12) + 24 * s
+        self._button(p, "answer_copy", QRectF(right - bh - 8 * s - bw, top + rr - bh / 2, bw, bh), "",
+                     text="Copied" if copied else "Copy")
+
     def call_seconds(self) -> float:
         return max(0.0, time.time() - self.live.call[1]) if self.live.call else 0.0
 
@@ -972,6 +1114,12 @@ class NotchWindow(QWidget):
         if b == "timer_add":
             self.add_time(60)
             return
+        if b == "answer_copy":
+            self.copy_answer()
+            return
+        if b == "answer_close" or self.answer is not None:
+            self.clear_answer()                      # a click puts the answer away
+            return
         self.press.snap(1.0)
         self.press.target = 0.0
         self._wake()
@@ -989,6 +1137,10 @@ class NotchWindow(QWidget):
     def _menu(self) -> None:
         m = QMenu()
         m.addAction("Open the rotary", self.clicked.emit)
+        m.addAction("Solve what's on screen", self.assist.emit)
+        if self.answer is not None:
+            m.addAction("Copy the answer", self.copy_answer)
+            m.addAction("Dismiss the answer", self.clear_answer)
         t = m.addMenu("Timer")
         if self.timer_end is not None:
             t.addAction(f"{mmss(self.timer_left())} left — add 1 minute", lambda: self.add_time(60))

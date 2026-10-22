@@ -24,7 +24,7 @@ with open(default_cfg, "w", encoding="utf-8") as f:
 
 datas = [("models/hand_landmarker.task", "models"), ("models/blaze_face_short_range.tflite", "models"),
          ("assets/icon.png", "assets"), ("assets/rotary-icons.ttf", "assets"), (default_cfg, ".")]
-binaries, hiddenimports = [], ["cv2_enumerate_cameras", "websocket", "sqlite3", "nturl2path"]
+binaries, hiddenimports = [], ["cv2_enumerate_cameras", "websocket", "sqlite3", "nturl2path", "certifi"]
 if WIN:
     hiddenimports += ["winsound",
                       # Windows media controls (the notch's "now playing")
