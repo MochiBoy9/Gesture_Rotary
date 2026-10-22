@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.5.1] — MIT License
+
+### New
+- **Gesture Rotary is now open source under the MIT License.**
+- *General → About* shows the license and the third-party software the app includes (Qt, MediaPipe, OpenCV,
+  NumPy and more), with the full text of each license.
+- Every download includes `LICENSE.txt`, next to the app on Windows and Linux and in the .dmg on macOS. The
+  app also carries `THIRD_PARTY_NOTICES.txt` and the full license texts.
+
 ## [1.5.0] — Screen assist
 
 ### New
