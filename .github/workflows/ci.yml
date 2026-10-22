@@ -28,6 +28,10 @@ jobs:
         with:
           python-version: "3.13"
       - uses: astral-sh/setup-uv@v6
+      - name: Fonts for Qt's offscreen platform on Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo 'QT_QPA_FONTDIR=C:\Windows\Fonts' >> "$GITHUB_ENV"
       - name: Linux libraries for Qt and MediaPipe
         if: runner.os == 'Linux'
         run: |
