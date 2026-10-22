@@ -1,0 +1,1000 @@
+"""The notch: a small liquid-glass tab hanging from the top of the screen — a Dynamic Island for Windows,
+and the way into the rotary without a camera.
+
+Resting, it shows the time and one live activity around it — what's playing (album art + sound bars), a
+timer counting down, or Medal recording a game — plus tiny dots when an app uses the microphone (orange)
+or the camera (green). Short status messages (a clip was saved, an app launched…) slide in and out.
+
+Hover it for the details (now playing: art, title, progress and ⏮ ⏯ ⏭). Click it, or scroll on it, to open
+the rotary. Right-click for timers and to customise what it shows.
+"""
+from __future__ import annotations
+
+import math
+import time
+
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import (QColor, QCursor, QFont, QFontMetricsF, QGuiApplication, QImage, QLinearGradient,
+                           QPainter, QPainterPath, QPen, QPixmap)
+from PySide6.QtWidgets import QMenu, QWidget
+
+from ..live import LiveState, NowPlaying
+from . import liquid
+from .glass import ICONS, TEXT, Spring, black, exclude_from_capture, font, grab_behind, qcolor, stroke_rim, white
+
+GREEN, AMBER, RED, BLUE, GRAY, ORANGE = "#30D158", "#FF9F0A", "#FF453A", "#0A84FF", "#8E8E93", "#FF9F0A"
+G_PREV, G_PLAY, G_PAUSE, G_NEXT, G_TIMER, G_MUSIC = "", "", "", "", "", ""
+G_PHONE, G_MIC, G_DEAFEN = "\uE717", "\uE720", "\uE74F"
+# What the call card's buttons press in each app (its own shortcuts).
+CALL_BUTTONS = {"Discord": [("mute", "Mute"), ("deafen", "Deafen")], "Teams": [("mute", "Mute")],
+                "Zoom": [("mute", "Mute")]}
+PAUSED_SHOW_SECONDS = 120          # a paused song stays on the notch this long
+
+DEFAULT_OPTIONS = {"clock": "time", "clock_24h": None, "media": True, "media_art": True, "clips": True, "calls": True,
+                   "privacy": True, "battery": True, "look": "dark", "alerts_over_games": True}
+
+
+def system_24h() -> bool:
+    """Does Windows show times as 24-hour (its short time format uses H rather than h)?"""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\International") as k:
+            return "H" in winreg.QueryValueEx(k, "sShortTime")[0]
+    except OSError:
+        return False
+
+
+def clock_text(t: time.struct_time, h24: bool, with_date: bool) -> str:
+    hm = f"{t.tm_hour:02d}:{t.tm_min:02d}" if h24 else f"{(t.tm_hour % 12) or 12}:{t.tm_min:02d}"
+    return f"{time.strftime('%a', t)} {t.tm_mday}  {hm}" if with_date else hm
+
+
+def mmss(seconds: float) -> str:
+    s = max(0, int(round(seconds)))
+    return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
+class NotchWindow(QWidget):
+    clicked = Signal()               # open the rotary
+    scrolled = Signal(int)           # wheel steps over the notch (+1 = next item)
+    media_command = Signal(str)      # "play_pause" | "next" | "previous"
+    timer_done = Signal()
+    call_command = Signal(str, str)  # (app, "mute" | "deafen")
+    customize = Signal()             # "Customise the notch…" from its menu
+
+    # Base geometry in logical px at the default text size: (width, height, bottom corner radius).
+    COLLAPSED = (188.0, 30.0, 13.0)
+    HOVER_H = 38.0
+    PEEK = (116.0, 5.0, 2.5)
+    STATUS_H = 38.0
+    MEDIA_CARD = (440.0, 96.0, 30.0)
+    TIMER_CARD = (300.0, 64.0, 26.0)
+    CALL_CARD = (330.0, 64.0, 26.0)
+    MAX_W = 560.0
+    MARGIN = 14.0
+    SHOULDER = 8.0
+
+    def __init__(self):
+        super().__init__(None)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+                            | Qt.WindowType.Tool | Qt.WindowType.WindowDoesNotAcceptFocus
+                            | Qt.WindowType.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setWindowTitle("Gesture Rotary notch")
+        self.setAccessibleName("Gesture Rotary notch")
+
+        self.hovered = False
+        self.peek = False
+        self.active = False              # the rotary is open: the notch glows a little
+        self.hotkey = "Ctrl + Alt + Space"
+        self.s = 1.0
+        self.k = 1.0
+        self.high_contrast = False
+        self.reduce_motion = False
+        self.opts = dict(DEFAULT_OPTIONS)
+        self._h24 = system_24h()
+
+        self.status_text = ""
+        self.status_kind = "dot"
+        self.status_accent = QColor(GRAY)
+        self.status_progress: float | None = None
+        self.status_dot = False          # a quiet status: just a coloured dot
+
+        # live activities
+        self.live = LiveState()
+        self._art: QPixmap | None = None
+        self._art_key = None
+        self._art_tint = QColor("#ffffff")
+        self._paused_at: float | None = None
+        self.timer_end: float | None = None
+        self.timer_total = 0.0
+        self._buttons: dict[str, QRectF] = {}     # clickable parts of the hover card
+        self._hover_button = ""
+
+        self.w_s = Spring(self.COLLAPSED[0], 380.0, 30.0)
+        self.h_s = Spring(self.COLLAPSED[1], 380.0, 30.0)
+        self.r_s = Spring(self.COLLAPSED[2], 380.0, 30.0)
+        self.fade = Spring(1.0, 260.0, 30.0)        # text cross-fade
+        self.prog = Spring(0.0, 400.0, 40.0)
+        self.press = Spring(0.0, 420.0, 30.0)       # squish on click
+        self.lit = Spring(0.0, 200.0, 26.0)
+        self.card = Spring(0.0, 320.0, 32.0)        # 0 = compact, 1 = hover card
+        self._springs = (self.w_s, self.h_s, self.r_s, self.fade, self.prog, self.press, self.lit, self.card)
+        self._prev_text = ""
+        self._t0 = time.perf_counter()
+        self._last = time.perf_counter()
+        self._wheel = 0
+        self._clock_key = ""
+
+        self._bd: liquid.Backdrop | None = None
+        self._bd_ver = 0
+        self._excluded = False
+        self._glass_key = None
+        self._glass_brush = None
+        self._fonts: dict = {}
+
+        self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._tick)
+        self._bd_timer = QTimer(self)
+        self._bd_timer.timeout.connect(self._refresh_backdrop)
+        self._live_timer = QTimer(self)                 # clock, countdowns, progress, sound bars
+        self._live_timer.timeout.connect(self._live_tick)
+        self._resize_window()
+
+    # ------------------------------------------------------------------ public api
+    def set_status(self, text: str, kind: str = "dot", accent: str = GRAY, progress: float | None = None,
+                   collapsed: bool = False, hidden: bool = False) -> None:
+        """Same contract as the status pill."""
+        text = "" if (hidden or collapsed) else text
+        changed = False
+        if text != self.status_text:
+            self._prev_text, self.status_text = self._shown_text(), text
+            self.fade.snap(0.0)
+            self.fade.target = 1.0
+            changed = True
+        dot = collapsed and not hidden
+        acc = QColor(accent)
+        if kind != self.status_kind or acc != self.status_accent or dot != self.status_dot:
+            self.status_kind, self.status_accent, self.status_dot = kind, acc, dot
+            changed = True
+        if (progress is None) != (self.status_progress is None):
+            changed = True
+        self.status_progress = None if hidden else progress
+        if progress is not None:
+            self.prog.target = progress
+        if changed or kind == "pulse" or progress is not None:
+            self._retarget()
+
+    def set_options(self, opts: dict) -> None:
+        self.opts = {**DEFAULT_OPTIONS, **{k: v for k, v in (opts or {}).items() if k in DEFAULT_OPTIONS}}
+        self._h24 = system_24h() if self.opts["clock_24h"] is None else bool(self.opts["clock_24h"])
+        self._glass_key = None
+        self._retarget()
+
+    def set_live(self, state: LiveState) -> None:
+        m = state.media
+        if m is not None and m.art is not None and (m.key, len(m.art)) != self._art_key:
+            self._art_key = (m.key, len(m.art))
+            self._art, self._art_tint = self._load_art(m.art)
+        elif m is None or m.art is None:
+            self._art, self._art_key = None, None
+        if m is not None and not m.playing:
+            if self._paused_at is None or (self.live.media is not None and self.live.media.key != m.key):
+                self._paused_at = time.monotonic()
+        else:
+            self._paused_at = None
+        self.live = state
+        self._retarget()
+
+    def set_active(self, on: bool) -> None:
+        self.active = bool(on)
+        self.lit.target = 1.0 if on else 0.0
+        self._wake()
+
+    def set_hotkey(self, label: str) -> None:
+        self.hotkey = label
+        self._retarget()
+
+    def set_accessibility(self, text_scale: float = 1.0, high_contrast: bool = False,
+                          reduce_motion: bool = False) -> None:
+        k = max(0.8, min(1.8, float(text_scale)))
+        s = 1.0 + (k - 1.0) * 0.6
+        if (s, high_contrast) != (self.s, self.high_contrast):
+            self._fonts = {}
+            self._glass_key = None
+        self.k, self.s = k, s
+        self.high_contrast = bool(high_contrast)
+        self.reduce_motion = bool(reduce_motion)
+        kc = (520.0, 46.0) if reduce_motion else (380.0, 30.0)
+        for sp in (self.w_s, self.h_s, self.r_s):
+            sp.k, sp.c = kc
+        self._resize_window()
+        self._retarget()
+
+    def set_peek(self, on: bool) -> None:
+        self.peek = bool(on)
+        self._retarget()
+
+    def place(self) -> None:
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        g = screen.availableGeometry()
+        self.move(g.center().x() - self.width() // 2 + (1 if g.width() % 2 else 0), g.top())
+
+    # -- timer
+    def start_timer(self, seconds: float) -> None:
+        self.timer_total = float(seconds)
+        self.timer_end = time.monotonic() + seconds
+        self._retarget()
+
+    def add_time(self, seconds: float) -> None:
+        if self.timer_end is not None:
+            self.timer_end += seconds
+            self.timer_total += seconds
+            self._retarget()
+
+    def cancel_timer(self) -> None:
+        self.timer_end = None
+        self._retarget()
+
+    def timer_left(self) -> float:
+        return max(0.0, self.timer_end - time.monotonic()) if self.timer_end is not None else 0.0
+
+    # ------------------------------------------------------------------ what to show
+    def media(self) -> NowPlaying | None:
+        m = self.live.media
+        if m is None or not self.opts["media"]:
+            return None
+        if not m.playing and self._paused_at is not None and time.monotonic() - self._paused_at > PAUSED_SHOW_SECONDS:
+            return None
+        return m
+
+    def activity(self) -> str:
+        """The one live activity the resting notch shows: call > timer > clip recording > now playing."""
+        if self.opts["calls"] and self.live.call:
+            return "call"
+        if self.timer_end is not None:
+            return "timer"
+        if self.opts["clips"] and self.live.clipping:
+            return "clip"
+        if self.media() is not None:
+            return "media"
+        return ""
+
+    def _clock(self) -> str:
+        mode = self.opts["clock"]
+        if mode not in ("time", "date"):
+            return ""
+        return clock_text(time.localtime(), self._h24, mode == "date")
+
+    def _privacy(self) -> list[QColor]:
+        if not self.opts["privacy"]:
+            return []
+        return ([QColor(ORANGE)] if self.live.mic else []) + ([QColor(GREEN)] if self.live.camera else [])
+
+    def _warning(self) -> bool:
+        """A quiet problem (no camera): a small warning sign instead of words."""
+        return self.status_dot and self.status_kind == "warning"
+
+    def _card_kind(self) -> str:
+        """Which detailed card a hover shows ('' = the small 'Rotary' chip)."""
+        if not self.hovered or self.status_text or self.status_progress is not None:
+            return ""
+        act = self.activity()
+        return act if act in ("media", "timer", "call") else ""
+
+    # ------------------------------------------------------------------ geometry
+    def _resize_window(self) -> None:
+        w = int(math.ceil((self.MAX_W + 2 * self.MARGIN) * self.s))
+        h = int(math.ceil((self.MEDIA_CARD[1] + self.MARGIN) * self.s))
+        if (w, h) != (self.width(), self.height()):
+            self.resize(w, h)
+            self._glass_key = None
+            if self.isVisible():
+                self.place()
+
+    def _shown_text(self) -> str:
+        if self.status_text:
+            return self.status_text
+        if self.hovered and not self._card_kind():
+            return self._hover_label()
+        return ""
+
+    def _hover_label(self) -> str:
+        if self.activity() == "clip":
+            return f"Medal is clipping {self.live.clipping}"
+        return "Rotary"
+
+    def _text_width(self, text: str, px: float = 13.5) -> float:
+        return self._font("text", px * self.k, QFont.Weight.DemiBold)[1].horizontalAdvance(text)
+
+    def _compact_width(self) -> float:
+        s = self.s
+        clock = self._clock()
+        centre = self._text_width(clock, 13.0) + 12 * s if clock else 26 * s
+        act = self.activity()
+        side = 0.0
+        if act == "timer":
+            side = max(46 * s, self._text_width(mmss(self.timer_left()), 12.5) + 14 * s)
+        elif act == "call":
+            side = max(46 * s, self._text_width(mmss(self.call_seconds()), 12.5) + 14 * s)
+        elif act in ("media", "clip"):
+            side = 42 * s
+        side += 10 * s if self._privacy() else 0.0
+        side += 18 * s if self._warning() else 0.0
+        floor =self.COLLAPSED[0] * s + (52 * s if act else 0.0)      # an activity spreads the island out
+        return max(floor, centre + 2 * side + 2 * 16 * s)
+
+    def _target(self) -> tuple[float, float, float, float]:
+        s = self.s
+        if self.status_text or self.status_progress is not None:
+            h = self.STATUS_H * s
+            w = (40 * s + self._text_width(self.status_text) + 22) if self.status_text else 120 * s
+            return min(self.MAX_W * s, max(self.COLLAPSED[0] * s, w)), h, h / 2 - 2, 0.0
+        card = self._card_kind()
+        if card == "media":
+            w, h, r = self.MEDIA_CARD
+            return w * s, h * s, r * s, 1.0
+        if card == "timer":
+            w, h, r = self.TIMER_CARD
+            return w * s, h * s, r * s, 1.0
+        if card == "call":
+            w, h, r = self.CALL_CARD
+            return w * s, h * s, r * s, 1.0
+        if self.hovered:
+            h = self.HOVER_H * s
+            label = self._hover_label()
+            kf, kfm = self._font("text", 11 * self.k, QFont.Weight.Normal)
+            cap = kfm.horizontalAdvance(self.hotkey) + 30 * s if (self.hotkey and label == "Rotary") else 0
+            w = 40 * s + self._text_width(label) + 16 * s + cap
+            return min(self.MAX_W * s, max(self.COLLAPSED[0] * s + 24 * s, w)), h, h / 2 - 2, 0.0
+        busy = bool(self.activity() or self.status_dot or self._privacy())
+        if self.peek and not self.active and not busy:
+            w, h, r = self.PEEK
+            return w * s, h * s, r * s, 0.0
+        w, h, r = self.COLLAPSED
+        return self._compact_width(), h * s, r * s, 0.0
+
+    def _retarget(self) -> None:
+        w, h, r, c = self._target()
+        self.w_s.target, self.h_s.target, self.r_s.target = w, h, r
+        self.card.target = c
+        if self.reduce_motion:
+            self.card.snap(c)
+        self._wake()
+        self._schedule_live()
+
+    def body_rect(self) -> QRectF:
+        w, h = max(8.0, self.w_s.value), max(2.0, self.h_s.value)
+        sq = 1.0 - 0.04 * self.press.value
+        w, h = w * sq, h * (1.0 - 0.06 * self.press.value)
+        return QRectF(self.width() / 2 - w / 2, 0.0, w, h)
+
+    def _body_path(self, rect: QRectF, r: float) -> QPainterPath:
+        """The notch: shoulders curving into the top edge of the screen, rounded at the bottom."""
+        r = max(1.0, min(r, rect.height(), rect.width() / 2))
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(rect.left(), -r - 2, rect.width(), rect.height() + r + 2), r, r)
+        sh = min(self.SHOULDER * self.s, rect.height() * 0.7)
+        if sh > 1.0:
+            for x, sgn in ((rect.left(), -1.0), (rect.right(), 1.0)):
+                f = QPainterPath()
+                f.moveTo(x + sgn * sh, 0)
+                f.quadTo(x, 0, x, sh)
+                f.lineTo(x, 0)
+                f.closeSubpath()
+                path = path.united(f)
+        return path
+
+    # ------------------------------------------------------------------ animation
+    def _wake(self) -> None:
+        if not self.isVisible():
+            return
+        if not self._timer.isActive():
+            screen = self.screen()
+            hz = (screen.refreshRate() if screen else 60.0) or 60.0
+            self._timer.setInterval(max(4, int(1000.0 / max(30.0, min(hz, 165.0)))))
+            self._last = time.perf_counter()
+            self._timer.start()
+        self._schedule_backdrop()
+
+    def _tick(self) -> None:
+        now = time.perf_counter()
+        dt, self._last = min(now - self._last, 1 / 30), now
+        for sp in self._springs:
+            sp.step(dt)
+        self.update()
+        if all(sp.settled for sp in self._springs) and self.status_kind != "pulse":
+            self._timer.stop()
+
+    def _schedule_live(self) -> None:
+        """Repaint as often as what's showing needs: sound bars ~12×/s, everything else once a second."""
+        if not self.isVisible():
+            self._live_timer.stop()
+            return
+        act = self.activity()
+        m = self.media()
+        if act == "media" and m is not None and m.playing and not self.reduce_motion and not self._card_kind():
+            interval = 80
+        elif self._clock() or act or self._card_kind():
+            interval = 1000 if not act == "clip" else 120
+        else:
+            self._live_timer.stop()
+            return
+        if not self._live_timer.isActive() or self._live_timer.interval() != interval:
+            self._live_timer.start(interval)
+
+    def _live_tick(self) -> None:
+        if self.timer_end is not None and time.monotonic() >= self.timer_end:
+            self.timer_end = None
+            self.timer_done.emit()
+        if self._paused_at is not None and time.monotonic() - self._paused_at > PAUSED_SHOW_SECONDS + 1:
+            self._paused_at = None
+            self.live = LiveState(None, self.live.clipping, self.live.mic, self.live.camera)
+        key = (f"{self._clock()}|{mmss(self.timer_left()) if self.timer_end else ''}|"
+               f"{mmss(self.call_seconds()) if self.live.call else ''}")
+        if key != self._clock_key:
+            self._clock_key = key
+            self._retarget()
+        else:
+            self._schedule_live()
+        self.update()
+
+    def showEvent(self, ev) -> None:
+        super().showEvent(ev)
+        if not self._excluded:
+            self._excluded = exclude_from_capture(self, True)
+        self._refresh_backdrop(force=True)
+        self._wake()
+        self._schedule_live()
+
+    def hideEvent(self, ev) -> None:
+        super().hideEvent(ev)
+        self._timer.stop()
+        self._bd_timer.stop()
+        if self.timer_end is None:
+            self._live_timer.stop()        # a running timer keeps counting (and rings) while hidden
+
+    # ------------------------------------------------------------------ live glass
+    def _schedule_backdrop(self) -> None:
+        if not self._excluded:
+            return               # it would see itself: keep the first grab
+        interval = 700 if self.hovered or self.status_text else 3000
+        if not self._bd_timer.isActive() or self._bd_timer.interval() != interval:
+            self._bd_timer.start(interval)
+
+    def _refresh_backdrop(self, force: bool = False) -> None:
+        if not self.isVisible() or (self._bd is not None and not self._excluded and not force):
+            return
+        bd = liquid.Backdrop.from_pixmap(grab_behind(self))
+        if bd is not None:
+            self._bd = bd
+            self._bd_ver += 1
+            self.update()
+
+    def _glass(self, rect: QRectF, r: float):
+        """Refracted backdrop for the current body size (quantised so animation reuses the work)."""
+        bd = self._bd
+        if bd is None or self.high_contrast:
+            return None
+        q = 4.0
+        w, h = round(rect.width() / q) * q, round(rect.height() / q) * q
+        key = (w, h, round(r), self._bd_ver, self.width())
+        if key != self._glass_key:
+            cx = self.width() / 2
+            shape = liquid.RoundRect(cx - w / 2, -r - 2, cx + w / 2, h, max(2.0, r),
+                                     bevel=min(14 * self.s, h * 0.5), bend=0.85, magnify=1.02)
+            self._glass_brush = liquid.brush(liquid.render(bd, [shape]), bd.f)
+            self._glass_key = key
+        return self._glass_brush
+
+    # ------------------------------------------------------------------ painting
+    def _font(self, which: str, px: float, weight: QFont.Weight) -> tuple[QFont, QFontMetricsF]:
+        key = (which, round(px, 2), weight)
+        got = self._fonts.get(key)
+        if got is None:
+            f = font(ICONS if which == "icons" else TEXT, px, weight)
+            got = self._fonts[key] = (f, QFontMetricsF(f))
+        return got
+
+    @staticmethod
+    def _load_art(data: bytes) -> tuple[QPixmap | None, QColor]:
+        img = QImage.fromData(data)
+        if img.isNull():
+            return None, QColor("#ffffff")
+        side = min(img.width(), img.height())          # square crop (video thumbnails are 16:9)
+        img = img.copy((img.width() - side) // 2, (img.height() - side) // 2, side, side)
+        img = img.scaled(160, 160, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        avg = img.scaled(1, 1, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        c = QColor(avg.pixel(0, 0))
+        h, s_, v, _a = c.getHsvF()
+        tint = QColor.fromHsvF(max(0.0, h), min(1.0, s_ * 1.3 + 0.15), max(0.75, v))     # vivid enough for bars
+        return QPixmap.fromImage(img), tint
+
+    def paintEvent(self, _ev) -> None:
+        p = QPainter(self)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        p.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        p.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform
+                         | QPainter.RenderHint.TextAntialiasing)
+        self.paint(p)
+        p.end()
+
+    def paint(self, p: QPainter) -> None:
+        rect = self.body_rect()
+        r = max(1.0, self.r_s.value)
+        body = self._body_path(rect, r)
+        hc = self.high_contrast
+        glassy = self.opts["look"] == "glass" and not hc
+        big = min(1.0, max(0.0, (rect.height() - self.COLLAPSED[1] * self.s) / (6 * self.s)))   # grown
+
+        # shadow (kept tight: every visible pixel catches the mouse)
+        for i, a in ((5, 0.05), (3, 0.07), (1.5, 0.09)):
+            sp = QPainterPath()
+            sp.addRoundedRect(QRectF(rect.left() - i, -r, rect.width() + 2 * i, rect.height() + r + i + 1.5),
+                              r + i, r + i)
+            p.fillPath(sp, black(a * (0.6 if glassy else 1.0)))
+
+        # body: the refracted backdrop under a tint — "Dark" is nearly black at rest like a real notch,
+        # "Glass" lets much more of the screen through
+        lum = self._bd.lum if self._bd is not None else 0.5
+        glass = self._glass(rect, r)
+        if glass is not None:
+            p.fillPath(body, glass)
+        if hc:
+            rest_a, grown_a = 0.9, 0.94
+        elif glassy:
+            rest_a, grown_a = liquid.tint_alpha(lum, 0.22, 0.48), liquid.tint_alpha(lum, 0.30, 0.56)
+        else:
+            rest_a, grown_a = 0.80, liquid.tint_alpha(lum, 0.52, 0.70)
+        p.fillPath(body, qcolor("#09090d", rest_a + (grown_a - rest_a) * big))
+        sheen = QLinearGradient(0, 0, 0, rect.bottom())
+        sheen.setColorAt(0.0, white(0.0))
+        sheen.setColorAt(0.7, white(0.05 if glassy else 0.03))
+        sheen.setColorAt(1.0, white(0.14 if glassy else 0.09))
+        p.fillPath(body, sheen)
+        lit = self.lit.value
+        if lit > 0.01:
+            p.fillPath(body, qcolor(BLUE, 0.18 * lit))
+        p.save()
+        p.setClipRect(QRectF(0, 1.0, self.width(), self.height()))
+        if hc:
+            p.strokePath(body, QPen(white(0.9), 1.6))
+        else:
+            stroke_rim(p, body, QPointF(rect.center().x(), rect.top()), 1.2, 1.0 if glassy else 0.8, light_deg=235)
+        p.restore()
+
+        p.save()
+        p.setClipPath(body)
+        c = max(0.0, min(1.0, self.card.value))
+        self._buttons = {}
+        if c < 0.999:
+            p.setOpacity(1.0 - c)
+            self._paint_content(p, rect)
+        if c > 0.001:
+            p.setOpacity(c)
+            kind = self._card_kind() or self._last_card
+            if kind == "media":
+                self._paint_media_card(p, rect)
+            elif kind == "timer":
+                self._paint_timer_card(p, rect)
+            elif kind == "call":
+                self._paint_call_card(p, rect)
+        p.restore()
+
+    _last_card = ""
+
+    # -- compact
+    def _paint_content(self, p: QPainter, rect: QRectF) -> None:
+        s, h = self.s, rect.height()
+        if h < 14 * s:
+            return
+        cy = rect.top() + h / 2
+        text = self._shown_text()
+        tf, fm = self._font("text", 13.5 * self.k, QFont.Weight.DemiBold)
+        f = max(0.0, min(1.0, self.fade.value))
+        if text or (self._prev_text and f < 1):
+            ic = QPointF(rect.left() + 20 * s, cy)
+            if self.status_text or self.status_progress is not None:
+                self._indicator(p, ic)
+            elif self.activity() == "clip":
+                self._rec_dot(p, ic)
+            else:
+                self._dial_mark(p, ic, 6.0 * s, 1.0)
+            tx = rect.left() + 38 * s
+            area = QRectF(tx, rect.top(), rect.right() - tx - 12, h)
+            if not self.status_text and self.hovered and self.hotkey and text == "Rotary":
+                kf, kfm = self._font("text", 11 * self.k, QFont.Weight.Normal)
+                kw = kfm.horizontalAdvance(self.hotkey) + 14 * s
+                cap = QRectF(rect.right() - kw - 12 * s, cy - 10 * s, kw, 20 * s)
+                p.save()
+                p.setOpacity(p.opacity() * f)
+                p.setPen(QPen(white(0.22), 1.0))
+                p.setBrush(white(0.07))
+                p.drawRoundedRect(cap, 6 * s, 6 * s)
+                p.setFont(kf)
+                p.setPen(white(0.7))
+                p.drawText(cap, Qt.AlignmentFlag.AlignCenter, self.hotkey)
+                p.restore()
+                area.setRight(cap.left() - 8)
+            p.setFont(tf)
+            if self._prev_text and f < 1:
+                p.setPen(white(0.92 * (1 - f)))
+                p.drawText(area.translated(0, -5 * f), Qt.AlignmentFlag.AlignVCenter,
+                           fm.elidedText(self._prev_text, Qt.TextElideMode.ElideRight, area.width()))
+            p.setPen(white(0.95 * f))
+            p.drawText(area.translated(0, 5 * (1 - f)), Qt.AlignmentFlag.AlignVCenter,
+                       fm.elidedText(text, Qt.TextElideMode.ElideRight, area.width()))
+            return
+        self._paint_resting(p, rect, cy)
+
+    def _paint_resting(self, p: QPainter, rect: QRectF, cy: float) -> None:
+        """Clock in the middle, the live activity either side of it, privacy dots at the far right."""
+        s = self.s
+        clock = self._clock()
+        if clock:
+            cf, cfm = self._font("text", 13.0 * self.k, QFont.Weight.DemiBold)
+            p.setFont(cf)
+            p.setPen(white(0.92))
+            p.drawText(QRectF(rect.left(), rect.top(), rect.width(), rect.height()), Qt.AlignmentFlag.AlignCenter,
+                       clock)
+        elif not self.activity():
+            self._dial_mark(p, QPointF(rect.center().x(), cy + 1), 5.5 * s, 0.6 + 0.4 * self.lit.value)
+        dots = self._privacy()
+        right = rect.right() - 16 * s
+        if self._warning():
+            p.setFont(self._font("icons", 12.5 * s, QFont.Weight.Normal)[0])
+            p.setPen(self.status_accent)
+            p.drawText(QRectF(right - 8 * s, cy - 9 * s, 16 * s, 18 * s), Qt.AlignmentFlag.AlignCenter, "")
+            right -= 18 * s
+        if dots:
+            for i, col in enumerate(dots):
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(col)
+                p.drawEllipse(QPointF(right - i * 8 * s, cy), 3.0 * s, 3.0 * s)
+            right -= 10 * s + (len(dots) - 1) * 8 * s
+        lead = QPointF(rect.left() + 16 * s + 10 * s, cy)
+        act = self.activity()
+        if act == "media":
+            m = self.media()
+            self._art_tile(p, QRectF(lead.x() - 10 * s, cy - 10 * s, 20 * s, 20 * s), 5 * s)
+            self._bars(p, QRectF(right - 22 * s, cy - 8 * s, 22 * s, 16 * s), m is not None and m.playing)
+        elif act == "timer":
+            p.setFont(self._font("icons", 13 * s, QFont.Weight.Normal)[0])
+            p.setPen(QColor(ORANGE))
+            p.drawText(QRectF(lead.x() - 10 * s, cy - 10 * s, 20 * s, 20 * s), Qt.AlignmentFlag.AlignCenter, G_TIMER)
+            tf, tfm = self._font("text", 12.5 * self.k, QFont.Weight.DemiBold)
+            p.setFont(tf)
+            t = mmss(self.timer_left())
+            p.drawText(QRectF(right - tfm.horizontalAdvance(t) - 2, rect.top(), tfm.horizontalAdvance(t) + 4,
+                              rect.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, t)
+        elif act == "call":
+            self._phone(p, lead, 9 * s)
+            tf, tfm = self._font("text", 12.5 * self.k, QFont.Weight.DemiBold)
+            p.setFont(tf)
+            p.setPen(QColor(GREEN))
+            t = mmss(self.call_seconds())
+            p.drawText(QRectF(right - tfm.horizontalAdvance(t) - 2, rect.top(), tfm.horizontalAdvance(t) + 4,
+                              rect.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, t)
+        elif act == "clip":
+            self._rec_dot(p, lead)
+            tf, tfm = self._font("text", 10.5 * self.k, QFont.Weight.Bold)
+            p.setFont(tf)
+            p.setPen(QColor(RED))
+            p.drawText(QRectF(right - 30 * s, rect.top(), 30 * s, rect.height()),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, "REC")
+        if self.status_dot and not act and not self._warning():
+            dc = QPointF(rect.right() - 18 * s, cy)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(qcolor(self.status_accent, 0.3))
+            p.drawEllipse(dc, 6 * s, 6 * s)
+            p.setBrush(self.status_accent)
+            p.drawEllipse(dc, 3.4 * s, 3.4 * s)
+
+    def _art_tile(self, p: QPainter, r: QRectF, radius: float) -> None:
+        path = QPainterPath()
+        path.addRoundedRect(r, radius, radius)
+        if self._art is not None and self.opts["media_art"]:
+            p.save()
+            p.setClipPath(path)
+            p.drawPixmap(r, self._art, QRectF(self._art.rect()))
+            p.restore()
+            p.strokePath(path, QPen(white(0.18), 0.8))
+            return
+        p.fillPath(path, qcolor(self._art_tint if self._art is not None else QColor("#FF375F"), 0.9))
+        p.setFont(self._font("icons", r.height() * 0.55, QFont.Weight.Normal)[0])
+        p.setPen(white(1.0))
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, G_MUSIC)
+
+    def _bars(self, p: QPainter, r: QRectF, playing: bool) -> None:
+        """Four sound bars, tinted from the album art, dancing while it plays."""
+        n, gap = 4, r.width() / 4
+        w = gap * 0.55
+        t = time.perf_counter() - self._t0
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self._art_tint)
+        for i in range(n):
+            if playing and not self.reduce_motion:
+                v = 0.35 + 0.65 * abs(math.sin(t * (2.1 + 0.7 * i) + i * 1.3) * math.sin(t * (1.3 + 0.45 * i)))
+            else:
+                v = 0.22
+            bh = max(w, r.height() * v)
+            x = r.left() + i * gap + (gap - w) / 2
+            p.drawRoundedRect(QRectF(x, r.center().y() - bh / 2, w, bh), w / 2, w / 2)
+
+    def _rec_dot(self, p: QPainter, c: QPointF) -> None:
+        a = 1.0 if self.reduce_motion else 0.55 + 0.45 * (0.5 + 0.5 * math.sin((time.perf_counter() - self._t0) * 3))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(qcolor(RED, 0.3 * a))
+        p.drawEllipse(c, 7 * self.s, 7 * self.s)
+        p.setBrush(qcolor(RED, a))
+        p.drawEllipse(c, 4.2 * self.s, 4.2 * self.s)
+
+    # -- hover cards
+    def _button(self, p: QPainter, key: str, r: QRectF, glyph: str, big: bool = False, text: str = "") -> None:
+        self._buttons[key] = r
+        hot = self._hover_button == key
+        if hot or text:
+            path = QPainterPath()
+            path.addRoundedRect(r, r.height() / 2, r.height() / 2)
+            p.fillPath(path, white(0.16 if hot else 0.08))
+        if text:
+            p.setFont(self._font("text", 12 * self.k, QFont.Weight.DemiBold)[0])
+            p.setPen(white(0.95))
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
+            return
+        p.setFont(self._font("icons", (20 if big else 15) * self.s, QFont.Weight.Normal)[0])
+        p.setPen(white(1.0 if hot else 0.92))
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, glyph)
+
+    def _paint_media_card(self, p: QPainter, rect: QRectF) -> None:
+        m = self.media()
+        if m is None:
+            return
+        self._last_card = "media"
+        s = self.s
+        art = QRectF(rect.left() + 16 * s, rect.top() + 18 * s, 60 * s, 60 * s)
+        self._art_tile(p, art, 12 * s)
+        x = art.right() + 14 * s
+        right = rect.right() - 16 * s
+        ctl_w = 116 * s
+        text_w = right - ctl_w - x - 8 * s
+        tf, tfm = self._font("text", 14 * self.k, QFont.Weight.DemiBold)
+        sf, sfm = self._font("text", 12 * self.k, QFont.Weight.Normal)
+        p.setFont(tf)
+        p.setPen(white(0.97))
+        p.drawText(QRectF(x, rect.top() + 18 * s, text_w, tfm.height()), Qt.AlignmentFlag.AlignLeft,
+                   tfm.elidedText(m.title, Qt.TextElideMode.ElideRight, text_w))
+        p.setFont(sf)
+        p.setPen(white(0.62))
+        sub = " · ".join(x_ for x_ in (m.artist, m.app_name) if x_)
+        p.drawText(QRectF(x, rect.top() + 20 * s + tfm.height(), text_w, sfm.height()), Qt.AlignmentFlag.AlignLeft,
+                   sfm.elidedText(sub, Qt.TextElideMode.ElideRight, text_w))
+        # controls
+        cy = rect.top() + 34 * s
+        bw = 36 * s
+        cx0 = right - ctl_w
+        self._button(p, "previous", QRectF(cx0, cy - bw / 2, bw, bw), G_PREV)
+        self._button(p, "play_pause", QRectF(cx0 + 40 * s, cy - bw / 2, bw, bw), G_PAUSE if m.playing else G_PLAY,
+                     big=True)
+        self._button(p, "next", QRectF(cx0 + 80 * s, cy - bw / 2, bw, bw), G_NEXT)
+        # progress
+        py = rect.top() + 70 * s
+        if m.duration > 0:
+            pos = m.position_now()
+            lf, lfm = self._font("text", 10.5 * self.k, QFont.Weight.Normal)
+            p.setFont(lf)
+            p.setPen(white(0.55))
+            left_t, right_t = mmss(pos), "-" + mmss(m.duration - pos)
+            lw = max(lfm.horizontalAdvance(left_t), lfm.horizontalAdvance("0:00")) + 6 * s
+            rw = lfm.horizontalAdvance(right_t) + 6 * s
+            p.drawText(QRectF(x, py - 8 * s, lw, 16 * s), Qt.AlignmentFlag.AlignVCenter, left_t)
+            p.drawText(QRectF(right - rw, py - 8 * s, rw, 16 * s),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, right_t)
+            bar = QRectF(x + lw, py - 2 * s, right - rw - x - lw - 6 * s, 4 * s)
+            path = QPainterPath()
+            path.addRoundedRect(bar, 2 * s, 2 * s)
+            p.fillPath(path, white(0.18))
+            done = QRectF(bar.left(), bar.top(), bar.width() * min(1.0, pos / m.duration), bar.height())
+            path = QPainterPath()
+            path.addRoundedRect(done, 2 * s, 2 * s)
+            p.fillPath(path, white(0.9))
+        else:
+            self._bars(p, QRectF(x, py - 7 * s, 22 * s, 14 * s), m.playing)
+
+    def _paint_timer_card(self, p: QPainter, rect: QRectF) -> None:
+        if self.timer_end is None:
+            return
+        self._last_card = "timer"
+        s = self.s
+        cy = rect.top() + rect.height() / 2 + 2 * s
+        c = QPointF(rect.left() + 34 * s, cy)
+        rr = 15 * s
+        frac = self.timer_left() / max(1.0, self.timer_total)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(qcolor(ORANGE, 0.25), 3 * s))
+        p.drawEllipse(c, rr, rr)
+        p.setPen(QPen(QColor(ORANGE), 3 * s, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawArc(QRectF(c.x() - rr, c.y() - rr, 2 * rr, 2 * rr), 90 * 16, int(360 * 16 * frac))
+        tf, tfm = self._font("text", 24 * self.k, QFont.Weight.DemiBold)
+        p.setFont(tf)
+        p.setPen(QColor(ORANGE))
+        p.drawText(QRectF(c.x() + rr + 12 * s, rect.top(), 120 * s, rect.height() + 4 * s),
+                   Qt.AlignmentFlag.AlignVCenter, mmss(self.timer_left()))
+        bh = 28 * s
+        self._button(p, "timer_cancel", QRectF(rect.right() - 16 * s - 64 * s, cy - bh / 2, 64 * s, bh), "",
+                     text="Cancel")
+        self._button(p, "timer_add", QRectF(rect.right() - 16 * s - 64 * s - 8 * s - 60 * s, cy - bh / 2, 60 * s, bh),
+                     "", text="+1 min")
+
+    def call_seconds(self) -> float:
+        return max(0.0, time.time() - self.live.call[1]) if self.live.call else 0.0
+
+    def _phone(self, p: QPainter, c: QPointF, rr: float) -> None:
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(GREEN))
+        p.drawEllipse(c, rr, rr)
+        p.setFont(self._font("icons", rr * 1.05, QFont.Weight.Normal)[0])
+        p.setPen(white(1.0))
+        p.drawText(QRectF(c.x() - rr, c.y() - rr, 2 * rr, 2 * rr), Qt.AlignmentFlag.AlignCenter, G_PHONE)
+
+    def _paint_call_card(self, p: QPainter, rect: QRectF) -> None:
+        call = self.live.call
+        if not call:
+            return
+        self._last_card = "call"
+        s = self.s
+        cy = rect.top() + rect.height() / 2 + 2 * s
+        self._phone(p, QPointF(rect.left() + 34 * s, cy), 15 * s)
+        x = rect.left() + 60 * s
+        sf, sfm = self._font("text", 12 * self.k, QFont.Weight.Normal)
+        tf, tfm = self._font("text", 20 * self.k, QFont.Weight.DemiBold)
+        p.setFont(sf)
+        p.setPen(white(0.62))
+        p.drawText(QRectF(x, cy - tfm.height() / 2 - sfm.height() + 4 * s, 150 * s, sfm.height()),
+                   Qt.AlignmentFlag.AlignLeft, f"{call[0]} call")
+        p.setFont(tf)
+        p.setPen(QColor(GREEN))
+        p.drawText(QRectF(x, cy - tfm.height() / 2 + 6 * s, 150 * s, tfm.height()), Qt.AlignmentFlag.AlignLeft,
+                   mmss(self.call_seconds()))
+        bh, right = 28 * s, rect.right() - 16 * s
+        for key, label in reversed(CALL_BUTTONS.get(call[0], [])):
+            bw = self._text_width(label, 12) + 26 * s
+            self._button(p, f"call_{key}", QRectF(right - bw, cy - bh / 2, bw, bh), "", text=label)
+            right -= bw + 8 * s
+
+    def _dial_mark(self, p: QPainter, c: QPointF, rr: float, alpha: float) -> None:
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(white(0.6 * alpha), 1.6 * self.s))
+        p.drawEllipse(c, rr, rr)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(qcolor(BLUE, alpha))
+        p.drawEllipse(QPointF(c.x(), c.y() - rr), 2.3 * self.s, 2.3 * self.s)
+
+    def _indicator(self, p: QPainter, c: QPointF) -> None:
+        s = self.s
+        acc = self.status_accent
+        if self.status_progress is not None:
+            r = 9.5 * s
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(white(0.16), 2.4 * s))
+            p.drawEllipse(c, r, r)
+            p.setPen(QPen(acc, 2.4 * s, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawArc(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r), 90 * 16,
+                      int(-360 * 16 * max(0.0, min(1.0, self.prog.value))))
+            return
+        if self.status_kind in ("done", "error"):
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(acc)
+            p.drawEllipse(c, 10 * s, 10 * s)
+            p.setFont(self._font("icons", 11 * s, QFont.Weight.Bold)[0])
+            p.setPen(white(1.0))
+            p.drawText(QRectF(c.x() - 10 * s, c.y() - 10 * s, 20 * s, 20 * s), Qt.AlignmentFlag.AlignCenter,
+                       "" if self.status_kind == "done" else "")
+            return
+        if self.status_kind in ("clip", "timer", "power", "music"):
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(acc)
+            p.drawEllipse(c, 10 * s, 10 * s)
+            glyph = {"clip": "", "timer": G_TIMER, "power": "", "music": G_MUSIC}[self.status_kind]
+            p.setFont(self._font("icons", 11 * s, QFont.Weight.Normal)[0])
+            p.setPen(white(1.0))
+            p.drawText(QRectF(c.x() - 10 * s, c.y() - 10 * s, 20 * s, 20 * s), Qt.AlignmentFlag.AlignCenter, glyph)
+            return
+        a = 1.0
+        if self.status_kind == "pulse":
+            a = 0.45 + 0.55 * (0.5 + 0.5 * math.sin((time.perf_counter() - self._t0) * 5))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(qcolor(acc, 0.28 * a))
+        p.drawEllipse(c, 7.5 * s, 7.5 * s)
+        p.setBrush(qcolor(acc, a))
+        p.drawEllipse(c, 4.2 * s, 4.2 * s)
+
+    # ------------------------------------------------------------------ mouse
+    def enterEvent(self, ev) -> None:
+        if not self.hovered:
+            self.hovered = True
+            if not self.status_text and not self._card_kind():
+                self._prev_text = ""
+                self.fade.snap(0.0)
+                self.fade.target = 1.0
+            self._refresh_backdrop()
+            self._retarget()
+
+    def leaveEvent(self, ev) -> None:
+        self.hovered = False
+        self._hover_button = ""
+        self._retarget()
+
+    def _button_at(self, pt: QPointF) -> str:
+        if self.card.value < 0.6:
+            return ""
+        return next((k for k, r in self._buttons.items() if r.adjusted(-3, -3, 3, 3).contains(pt)), "")
+
+    def mouseMoveEvent(self, ev) -> None:
+        b = self._button_at(ev.position())
+        if b != self._hover_button:
+            self._hover_button = b
+            self.update()
+
+    def mousePressEvent(self, ev) -> None:
+        if ev.button() == Qt.MouseButton.RightButton:
+            self._menu()
+            return
+        if ev.button() != Qt.MouseButton.LeftButton:
+            return
+        b = self._button_at(ev.position())
+        if b in ("previous", "play_pause", "next"):
+            self.media_command.emit(b)
+            return
+        if b.startswith("call_") and self.live.call:
+            self.call_command.emit(self.live.call[0], b[5:])
+            return
+        if b == "timer_cancel":
+            self.cancel_timer()
+            return
+        if b == "timer_add":
+            self.add_time(60)
+            return
+        self.press.snap(1.0)
+        self.press.target = 0.0
+        self._wake()
+        self.clicked.emit()
+
+    def wheelEvent(self, ev) -> None:
+        d = ev.angleDelta()
+        self._wheel += d.y() if abs(d.y()) >= abs(d.x()) else -d.x()
+        while abs(self._wheel) >= 120:
+            step = 1 if self._wheel < 0 else -1          # wheel down = next item, like scrolling a list
+            self._wheel += 120 if self._wheel < 0 else -120
+            self.scrolled.emit(step)
+        ev.accept()
+
+    def _menu(self) -> None:
+        m = QMenu()
+        m.addAction("Open the rotary", self.clicked.emit)
+        t = m.addMenu("Timer")
+        if self.timer_end is not None:
+            t.addAction(f"{mmss(self.timer_left())} left — add 1 minute", lambda: self.add_time(60))
+            t.addAction("Cancel timer", self.cancel_timer)
+            t.addSeparator()
+        for minutes in (1, 3, 5, 10, 15, 25, 30, 45, 60):
+            t.addAction(f"{minutes} minute{'s' if minutes > 1 else ''}",
+                        lambda mins=minutes: self.start_timer(mins * 60))
+        if self.media() is not None:
+            m.addSeparator()
+            md = self.media()
+            m.addAction("Pause" if md.playing else "Play", lambda: self.media_command.emit("play_pause"))
+            m.addAction("Next", lambda: self.media_command.emit("next"))
+            m.addAction("Previous", lambda: self.media_command.emit("previous"))
+        m.addSeparator()
+        m.addAction("Customize the notch…", self.customize.emit)
+        m.exec(QCursor.pos())
