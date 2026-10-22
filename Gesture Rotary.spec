@@ -23,7 +23,8 @@ with open(default_cfg, "w", encoding="utf-8") as f:
     json.dump(DEFAULT_CONFIG, f, indent=2)
 
 datas = [("models/hand_landmarker.task", "models"), ("models/blaze_face_short_range.tflite", "models"),
-         ("assets/icon.png", "assets"), ("assets/rotary-icons.ttf", "assets"), (default_cfg, ".")]
+         ("assets/icon.png", "assets"), ("assets/rotary-icons.ttf", "assets"), (default_cfg, "."),
+         ("LICENSE", "."), ("THIRD_PARTY_NOTICES.txt", "."), ("licenses", "licenses")]
 binaries, hiddenimports = [], ["cv2_enumerate_cameras", "websocket", "sqlite3", "nturl2path"]
 if WIN:
     hiddenimports += ["winsound",
@@ -123,6 +124,6 @@ if MAC:
             "NSCameraUsageDescription": "Gesture Rotary watches for your hand so you can open and turn the "
                                         "rotary with gestures. Video never leaves your Mac.",
             "NSAppleEventsUsageDescription": "Gesture Rotary opens Terminal for commands you add to the rotary.",
-            "NSHumanReadableCopyright": "Gesture Rotary",
+            "NSHumanReadableCopyright": "Copyright © 2026 MochiBoy9. MIT License.",
         },
     )

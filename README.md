@@ -212,3 +212,10 @@ sounddevice dependencies are overridden away in `pyproject.toml` (the tracker gi
 
 On Windows, the virtual environment and build folders live under `%LOCALAPPDATA%\GestureRotary` because
 MediaPipe's deep file paths break Windows' 260-character path limit in long folders.
+
+## License
+
+Gesture Rotary is released under the [MIT License](LICENSE). The release builds also bundle Qt / PySide6,
+MediaPipe and its models, OpenCV, NumPy and other libraries, each under its own license (LGPL, Apache 2.0,
+BSD, MIT and others). [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) lists them, with the full texts in
+[licenses/](licenses); both ship inside every build.

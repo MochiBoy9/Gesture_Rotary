@@ -2,6 +2,8 @@
 name = "gesture-rotary"
 version = "1.4.0"
 description = "Gesture-controlled rotary launcher driven by any webcam, or a notch at the top of the screen"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.txt", "licenses/*.txt"]
 requires-python = ">=3.12"
 dependencies = [
     "cv2-enumerate-cameras>=1.4.0",

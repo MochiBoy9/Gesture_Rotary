@@ -18,6 +18,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher=Gesture Rotary
+AppCopyright=Copyright (c) 2026 MochiBoy9. MIT License.
 AppPublisherURL=https://github.com/MochiBoy9/Gesture_Rotary
 AppSupportURL=https://github.com/MochiBoy9/Gesture_Rotary/issues
 AppUpdatesURL=https://github.com/MochiBoy9/Gesture_Rotary/releases

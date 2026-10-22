@@ -1,0 +1,142 @@
+GESTURE ROTARY: THIRD-PARTY NOTICES
+===================================
+
+Gesture Rotary itself is released under the MIT License (see LICENSE). The release builds (Setup.exe,
+portable .zip, .dmg and Linux .tar.gz) also contain the software below, which stays under its own
+license. The full license texts are in the licenses/ folder next to this file.
+
+Each library is shipped as its own separate file in the app folder, so you can replace any of them
+with your own build of a compatible version. Release builds are made from this repository with
+tools/build.py, using the versions pinned in uv.lock.
+
+
+GNU LGPL libraries
+------------------
+
+Qt 6 and Qt for Python (PySide6, Shiboken6)
+  Copyright (C) The Qt Company Ltd. and other contributors
+  License: GNU Lesser General Public License v3 (licenses/LGPL-3.0.txt, which builds on
+           licenses/GPL-3.0.txt)
+  Source:  https://download.qt.io/official_releases/qt/
+           https://code.qt.io/cgit/pyside/pyside-setup.git/
+  Qt contains third-party components under their own licenses; see
+  https://doc.qt.io/qt-6/licenses-used-in-qt.html
+
+pynput (macOS and Linux builds)
+  Copyright (C) Moses Palmér
+  License: GNU Lesser General Public License v3 (licenses/LGPL-3.0.txt, licenses/GPL-3.0.txt)
+  Source:  https://github.com/moses-palmer/pynput
+
+python-xlib (Linux build)
+  Copyright (C) Peter Liljenberg and the python-xlib contributors
+  License: GNU Lesser General Public License v2.1 or later (licenses/LGPL-2.1.txt)
+  Source:  https://github.com/python-xlib/python-xlib
+
+FFmpeg libraries inside OpenCV (macOS and Linux builds)
+  Copyright (C) the FFmpeg developers
+  License: GNU Lesser General Public License v2.1 or later (licenses/LGPL-2.1.txt)
+  Source:  https://ffmpeg.org/download.html
+
+
+Apache License 2.0 (licenses/Apache-2.0.txt)
+--------------------------------------------
+
+MediaPipe, and the hand and face models in models/ (hand_landmarker.task,
+blaze_face_short_range.tflite)
+  Copyright The MediaPipe Authors (Google LLC)
+  https://github.com/google-ai-edge/mediapipe
+
+OpenCV
+  Copyright (C) the OpenCV authors (Intel Corporation, OpenCV Foundation and others)
+  https://github.com/opencv/opencv
+  The opencv-python-headless packaging is MIT-licensed, Copyright (c) Olli-Pekka Heinisuo:
+  https://github.com/opencv/opencv-python
+
+Abseil Python (absl-py)
+  Copyright The Abseil Authors
+  https://github.com/abseil/abseil-py
+
+FlatBuffers
+  Copyright Google Inc.
+  https://github.com/google/flatbuffers
+
+websocket-client
+  Copyright the websocket-client authors
+  https://github.com/websocket-client/websocket-client
+
+
+BSD 3-Clause License
+--------------------
+
+NumPy
+  Copyright (c) 2005-2025, NumPy Developers. All rights reserved.
+  https://github.com/numpy/numpy
+  NumPy's binaries also contain OpenBLAS and other components; see the license files in its
+  package (numpy.libs / numpy/.dylibs) and https://github.com/numpy/numpy/blob/main/LICENSES_bundled.txt
+
+  Redistribution and use in source and binary forms, with or without modification, are permitted
+  provided that the following conditions are met:
+  * Redistributions of source code must retain the above copyright notice, this list of conditions
+    and the following disclaimer.
+  * Redistributions in binary form must reproduce the above copyright notice, this list of
+    conditions and the following disclaimer in the documentation and/or other materials provided
+    with the distribution.
+  * Neither the name of the NumPy Developers nor the names of any contributors may be used to
+    endorse or promote products derived from this software without specific prior written
+    permission.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+  IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+  FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+  CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+  DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+  IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+  OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+MIT License
+-----------
+
+The components below use the same MIT terms as Gesture Rotary itself (see LICENSE), each under
+its own copyright notice:
+
+  Fluent UI System Icons (drawn into assets/rotary-icons.ttf)
+    Copyright (c) 2020 Microsoft Corporation
+    https://github.com/microsoft/fluentui-system-icons
+  cv2-enumerate-cameras
+    Copyright (c) lukehugh
+    https://github.com/lukehugh/cv2_enumerate_cameras
+  PyWinRT (winrt-runtime and the winrt-windows-* packages; Windows build)
+    Copyright (c) Microsoft Corporation and the PyWinRT contributors
+    https://github.com/pywinrt/pywinrt
+  PyObjC (macOS build)
+    Copyright (c) Ronald Oussoren and the PyObjC contributors
+    https://github.com/ronaldoussoren/pyobjc
+  six
+    Copyright (c) 2010-2024 Benjamin Peterson
+    https://github.com/benjaminp/six
+
+
+Other licenses
+--------------
+
+Python
+  Copyright (c) 2001-2024 Python Software Foundation. All Rights Reserved.
+  License: Python Software Foundation License (licenses/Python.txt)
+  https://www.python.org/
+
+typing_extensions (Windows build)
+  Copyright (c) Python Software Foundation
+  License: Python Software Foundation License (licenses/Python.txt)
+  https://github.com/python/typing_extensions
+
+certifi
+  License: Mozilla Public License 2.0
+  Source:  https://github.com/certifi/python-certifi
+
+PyInstaller bootloader
+  Copyright (c) the PyInstaller Development Team
+  License: GNU GPL v2 or later with the PyInstaller bootloader exception, which allows the
+           bootloader to be shipped with programs under any license.
+  https://github.com/pyinstaller/pyinstaller
