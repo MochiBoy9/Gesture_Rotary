@@ -1,6 +1,7 @@
 """Camera discovery, validation and a latest-frame capture thread.
 
-Every connected camera is enumerated (Media Foundation first, then DirectShow),
+Every connected camera is enumerated (Windows: Media Foundation first, then DirectShow;
+macOS: AVFoundation; Linux: Video4Linux),
 opened, and judged on what it actually delivers: live sensor frames (not a
 static placeholder or black screen), measured frame rate and resolution.
 """
@@ -8,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -27,7 +29,12 @@ try:
 except Exception:  # pragma: no cover
     enumerate_cameras = None
 
-BACKENDS = [(cv2.CAP_MSMF, "Media Foundation"), (cv2.CAP_DSHOW, "DirectShow")]
+if sys.platform == "win32":
+    BACKENDS = [(cv2.CAP_MSMF, "Media Foundation"), (cv2.CAP_DSHOW, "DirectShow")]
+elif sys.platform == "darwin":
+    BACKENDS = [(cv2.CAP_AVFOUNDATION, "AVFoundation")]
+else:
+    BACKENDS = [(cv2.CAP_V4L2, "Video4Linux")]
 REQUEST = (640, 480, 60)
 
 

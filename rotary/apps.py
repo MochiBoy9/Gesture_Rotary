@@ -1,7 +1,8 @@
 """What's installed: every Start-menu app (desktop, Store and packaged), plus Steam libraries.
 
 `start_apps()` mirrors Start → All apps (via Get-StartApps) and is cached on disk, so it's
-instant after the first run and refreshed in the background."""
+instant after the first run and refreshed in the background. On macOS it lists the .app bundles in
+the Applications folders; on Linux, the apps menu's .desktop entries."""
 from __future__ import annotations
 
 import json
@@ -14,7 +15,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from . import DATA_DIR
+from . import DATA_DIR, MAC, WIN
 
 log = logging.getLogger(__name__)
 CACHE_DIR = DATA_DIR / "cache"
@@ -90,6 +91,60 @@ def _load_start_apps_from_ps() -> list[StartApp]:
     return apps
 
 
+MAC_APP_DIRS = ["/Applications", "/Applications/Utilities", "/System/Applications", "/System/Applications/Utilities",
+                "~/Applications"]
+
+
+def _load_mac_apps() -> list[StartApp]:
+    """Every .app in the Applications folders (and one folder down, e.g. Adobe's)."""
+    found: dict[str, StartApp] = {}
+    for d in MAC_APP_DIRS:
+        root = Path(os.path.expanduser(d))
+        try:
+            entries = sorted(root.iterdir())
+        except OSError:
+            continue
+        for p in entries:
+            bundles = [p] if p.suffix == ".app" else []
+            if not bundles and p.is_dir() and not p.name.startswith("."):
+                try:
+                    bundles = sorted(q for q in p.iterdir() if q.suffix == ".app")
+                except OSError:
+                    pass
+            for b in bundles:
+                found.setdefault(b.stem.lower(), StartApp(b.stem, str(b), exe=str(b)))
+    return list(found.values())
+
+
+def linux_app_dirs() -> list[Path]:
+    data_home = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    data_dirs = (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":")
+    roots = [data_home] + data_dirs + [str(Path.home() / ".local/share/flatpak/exports/share"),
+                                       "/var/lib/flatpak/exports/share"]
+    return [Path(r) / "applications" for r in dict.fromkeys(roots) if r] + [Path("/var/lib/snapd/desktop/applications")]
+
+
+def _load_linux_apps() -> list[StartApp]:
+    """Every app in the desktop's apps menu (its .desktop files; the first one with a given id wins)."""
+    from . import posix
+    seen: set[str] = set()
+    out: list[StartApp] = []
+    for root in linux_app_dirs():
+        if not root.is_dir():
+            continue
+        for f in sorted(root.rglob("*.desktop")):
+            desktop_id = str(f.relative_to(root)).replace("/", "-")
+            if desktop_id in seen:
+                continue
+            seen.add(desktop_id)
+            e = posix.desktop_entry(str(f))
+            if e.get("Type", "Application") != "Application" or e.get("NoDisplay") == "true" \
+                    or e.get("Hidden") == "true" or not e.get("Name") or not e.get("Exec"):
+                continue
+            out.append(StartApp(e["Name"], desktop_id, exe=str(f)))
+    return out
+
+
 def start_apps(refresh: bool = False, wait: bool = True) -> list[StartApp]:
     """Every app in Start → All apps. Uses the on-disk cache when present (refreshing it in the
     background); `refresh=True` re-queries Windows now."""
@@ -108,7 +163,7 @@ def start_apps(refresh: bool = False, wait: bool = True) -> list[StartApp]:
         threading.Thread(target=start_apps, kwargs={"refresh": True}, daemon=True).start()
         return []
     try:
-        apps = _load_start_apps_from_ps()
+        apps = _load_start_apps_from_ps() if WIN else _load_mac_apps() if MAC else _load_linux_apps()
     except Exception:
         log.warning("couldn't list Start apps", exc_info=True)
         return list(_start_cache or [])
@@ -146,6 +201,8 @@ def find_start_app(*names: str) -> StartApp | None:
 # --------------------------------------------------------------------------- Start-menu shortcuts
 def start_menu_shortcuts() -> dict[str, str]:
     """name (lower) -> .lnk path, for icons and for resolving AUMID-only apps."""
+    if not WIN:
+        return {}
     roots = [Path(os.environ.get("ProgramData", r"C:\ProgramData")) / r"Microsoft\Windows\Start Menu\Programs",
              Path(os.environ.get("APPDATA", "")) / r"Microsoft\Windows\Start Menu\Programs"]
     out: dict[str, str] = {}
@@ -222,6 +279,14 @@ def parse_vdf(text: str) -> dict:
 
 
 def steam_path() -> str:
+    if not WIN:
+        home = Path.home()
+        for p in ([home / "Library/Application Support/Steam"] if MAC else
+                  [home / ".steam/steam", home / ".local/share/Steam",
+                   home / ".var/app/com.valvesoftware.Steam/.local/share/Steam"]):
+            if (p / "steamapps").is_dir():
+                return str(p.resolve())
+        return ""
     try:
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
@@ -318,10 +383,10 @@ def protocol_registered(scheme: str) -> bool:
 
 
 def first_existing(*patterns: str) -> str:
-    """First existing path among patterns (env vars expanded, `*` globs pick the newest match)."""
+    """First existing path among patterns (env vars and ~ expanded, `*` globs pick the newest match)."""
     import glob
     for pat in patterns:
-        p = os.path.expandvars(pat)
+        p = os.path.expanduser(os.path.expandvars(pat))
         if "*" in p:
             hits = sorted(glob.glob(p), key=lambda x: os.path.getmtime(x), reverse=True)
             if hits:

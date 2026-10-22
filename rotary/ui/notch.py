@@ -11,6 +11,7 @@ the rotary. Right-click for timers and to customise what it shows.
 from __future__ import annotations
 
 import math
+import sys
 import time
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
@@ -35,7 +36,14 @@ DEFAULT_OPTIONS = {"clock": "time", "clock_24h": None, "media": True, "media_art
 
 
 def system_24h() -> bool:
-    """Does Windows show times as 24-hour (its short time format uses H rather than h)?"""
+    """Does the system show times as 24-hour (its short time format uses H rather than h)?"""
+    if sys.platform != "win32":
+        from .. import posix
+        forced = posix.force_24h()
+        if forced is not None:
+            return forced
+        from PySide6.QtCore import QLocale
+        return "H" in QLocale.system().timeFormat(QLocale.FormatType.ShortFormat)
     try:
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\International") as k:

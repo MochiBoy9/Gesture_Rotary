@@ -2,6 +2,7 @@
 
   * Now playing: whatever Windows' media controls know about (YouTube and other sites in Chrome / Edge /
     Firefox, Spotify, Apple Music, Windows Media Player, …) with album art, progress and play / skip.
+    On Linux, any MPRIS player through playerctl. (macOS has no public API for this.)
   * Clips: Medal is recording a game; a clip or screenshot was just saved by Medal, Xbox Game Bar, the NVIDIA
     app or OBS.
   * Privacy: an app is using the microphone or the camera (other than Gesture Rotary itself).
@@ -142,19 +143,29 @@ def _medal_folder() -> Path:
 
 
 def videos_folder() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Movies"
     try:
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                             r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as k:
             v, _ = winreg.QueryValueEx(k, "My Video")
             return Path(os.path.expandvars(v))
-    except OSError:
+    except (OSError, ImportError):
         return Path.home() / "Videos"
+
+
+def obs_config() -> Path:
+    if sys.platform == "win32":
+        return Path(os.environ.get("APPDATA", "")) / "obs-studio"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "obs-studio"
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "obs-studio"
 
 
 def _obs_folders() -> list[Path]:
     out = []
-    base = Path(os.environ.get("APPDATA", "")) / "obs-studio" / "basic" / "profiles"
+    base = obs_config() / "basic" / "profiles"
     for ini in base.glob("*/basic.ini") if base.exists() else []:
         try:
             for line in ini.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -373,7 +384,8 @@ class _PowerStatus(ctypes.Structure):
 def battery() -> tuple[int, bool] | None:
     """(percent, plugged in), or None on a PC without a battery."""
     if sys.platform != "win32":
-        return None
+        from . import posix
+        return posix.battery()
     s = _PowerStatus()
     if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(s)):
         return None
@@ -490,6 +502,81 @@ class Media:
             await s.try_skip_previous_async()
 
 
+# =========================================================================== media (Linux: MPRIS via playerctl)
+class PlayerctlMedia:
+    """The same interface as Media, for Linux media players (anything speaking MPRIS: Spotify, browsers,
+    VLC, Rhythmbox…), read through the playerctl command."""
+    FIELDS = ("playerName", "status", "title", "artist", "position", "mpris:length", "mpris:artUrl")
+
+    def __init__(self):
+        self._art_key = None
+        self._art: bytes | None = None
+
+    @staticmethod
+    def _run(*args: str) -> str:
+        import subprocess
+        try:
+            return subprocess.run(["playerctl", *args], capture_output=True, text=True, timeout=3).stdout
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    @staticmethod
+    def parse(line: str) -> dict | None:
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) != len(PlayerctlMedia.FIELDS):
+            return None
+        return dict(zip(PlayerctlMedia.FIELDS, parts))
+
+    @staticmethod
+    def _seconds(us: str) -> float:
+        try:
+            return max(0.0, int(float(us)) / 1e6)
+        except ValueError:
+            return 0.0
+
+    async def read(self, want_art: bool = True) -> NowPlaying | None:
+        fmt = "\t".join("{{" + f + "}}" for f in self.FIELDS)
+        d = self.parse(await asyncio.to_thread(self._run, "metadata", "--format", fmt))
+        if d is None or not d["title"].strip() or d["status"] not in ("Playing", "Paused"):
+            return None
+        key = (d["playerName"], d["title"], d["artist"])
+        if want_art and key != self._art_key:
+            self._art_key, self._art = key, await asyncio.to_thread(self._fetch_art, d["mpris:artUrl"])
+        duration = self._seconds(d["mpris:length"])
+        return NowPlaying(d["playerName"], app_display_name(d["playerName"]), d["title"].strip(), d["artist"].strip(),
+                          d["status"] == "Playing", self._seconds(d["position"]), duration if duration > 1 else 0.0,
+                          time.monotonic(), self._art if want_art else None)
+
+    @staticmethod
+    def _fetch_art(url: str) -> bytes | None:
+        import urllib.parse
+        import urllib.request
+        try:
+            if url.startswith("file://"):
+                return Path(urllib.request.url2pathname(urllib.parse.urlparse(url).path)).read_bytes()[:8_000_000]
+            if url.startswith(("http://", "https://")):
+                with urllib.request.urlopen(url, timeout=3) as r:
+                    return r.read(8_000_000)
+        except (OSError, ValueError):
+            log.debug("no album art", exc_info=True)
+        return None
+
+    async def command(self, cmd: str) -> None:
+        verb = {"play_pause": "play-pause", "next": "next", "previous": "previous"}.get(cmd)
+        if verb:
+            await asyncio.to_thread(self._run, verb)
+
+
+def media_source():
+    """Where 'now playing' comes from on this system (None: nowhere)."""
+    if sys.platform == "win32":
+        return Media()
+    import shutil
+    if sys.platform.startswith("linux") and shutil.which("playerctl"):
+        return PlayerctlMedia()
+    return None
+
+
 # =========================================================================== the watcher thread
 class LiveWatcher(QThread):
     state = Signal(object)            # LiveState, whenever something visible changes
@@ -509,6 +596,7 @@ class LiveWatcher(QThread):
         self._cam: list[str] = []
         self._call: tuple[str, float] | None = None
         self._media_error_logged = False
+        self._media_api = None
 
     # -- from the UI thread
     def configure(self, opts: dict) -> None:
@@ -528,11 +616,12 @@ class LiveWatcher(QThread):
     # -- thread body
     def run(self) -> None:
         self._stop.clear()
-        try:
-            import winrt.runtime
-            winrt.runtime.init_apartment(winrt.runtime.MTA)       # Windows' media API needs COM on this thread
-        except Exception:
-            log.debug("COM already set up on the live thread", exc_info=True)
+        if sys.platform == "win32":
+            try:
+                import winrt.runtime
+                winrt.runtime.init_apartment(winrt.runtime.MTA)   # Windows' media API needs COM on this thread
+            except Exception:
+                log.debug("COM already set up on the live thread", exc_info=True)
         loop = asyncio.new_event_loop()
         self._loop = loop
         try:
@@ -544,6 +633,8 @@ class LiveWatcher(QThread):
             loop.close()
 
     async def _command(self, cmd: str) -> None:
+        if self._media_api is None:
+            return
         try:
             await self._media_api.command(cmd)
             await asyncio.sleep(0.25)
@@ -552,7 +643,9 @@ class LiveWatcher(QThread):
             log.debug("media command %s failed", cmd, exc_info=True)
 
     async def _main(self) -> None:
-        self._media_api = Media()
+        self._media_api = media_source()
+        if self._media_api is None:
+            log.info("no source for what's playing on this system")
         clips = ClipScanner(await asyncio.to_thread(clip_folders))
         power = BatteryWatch()
         tick = 0
@@ -604,11 +697,14 @@ class LiveWatcher(QThread):
 
     async def _poll_media(self) -> None:
         before = self._media
+        if self._media_api is None:
+            self._media = None
+            return
         try:
             self._media = await self._media_api.read(self.opts["media_art"])
         except Exception:
             if not self._media_error_logged:          # say it once, plainly, then stay quiet
-                log.warning("can't read what's playing from Windows' media controls", exc_info=True)
+                log.warning("can't read what's playing from the system's media controls", exc_info=True)
                 self._media_error_logged = True
             self._media = None
         m = self._media

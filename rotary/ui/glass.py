@@ -51,11 +51,23 @@ def ease_out_cubic(x: float) -> float:
 _families: set[str] | None = None
 
 
-def font(families: list[str], px: float, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
+def load_fonts() -> None:
+    """Without Windows' Segoe Fluent Icons (macOS, Linux), use the bundled Rotary Icons: the same glyphs
+    at the same code points, drawn from Fluent UI System Icons."""
     global _families
+    _families = set(QFontDatabase.families())
+    if not {"Segoe Fluent Icons", "Segoe MDL2 Assets", "Rotary Icons"} & _families:
+        from .. import ROOT
+        path = ROOT / "assets" / "rotary-icons.ttf"
+        if path.exists() and QFontDatabase.addApplicationFont(str(path)) >= 0:
+            _families = set(QFontDatabase.families())
+
+
+def font(families: list[str], px: float, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
     if _families is None:
-        _families = set(QFontDatabase.families())
-    fam = next((f for f in families if f in _families), "Segoe UI")
+        load_fonts()
+    fam = next((f for f in families if f in _families), None) or QFontDatabase.systemFont(
+        QFontDatabase.SystemFont.GeneralFont).family()
     f = QFont(fam)
     f.setPixelSize(max(1, int(round(px))))
     f.setWeight(weight)
@@ -65,7 +77,7 @@ def font(families: list[str], px: float, weight: QFont.Weight = QFont.Weight.Nor
 
 DISPLAY = ["SF Pro Display", "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI"]
 TEXT = ["SF Pro Text", "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI"]
-ICONS = ["Segoe Fluent Icons", "Segoe MDL2 Assets"]
+ICONS = ["Segoe Fluent Icons", "Segoe MDL2 Assets", "Rotary Icons"]
 
 
 # --------------------------------------------------------------------------- backdrop
@@ -86,7 +98,8 @@ def grab_behind(widget: QWidget) -> QPixmap | None:
 
 
 def exclude_from_capture(widget: QWidget, on: bool = True) -> bool:
-    """Hide a window from screen capture (Windows 10 2004+), so live glass never sees itself."""
+    """Hide a window from screen capture (Windows 10 2004+), so live glass never sees itself.
+    (Not available on macOS / Linux: there, live glass may see a frame of its own window.)"""
     if sys.platform != "win32":
         return False
     try:

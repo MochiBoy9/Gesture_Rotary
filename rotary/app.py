@@ -18,7 +18,7 @@ from PySide6.QtGui import (QAction, QActionGroup, QColor, QGuiApplication, QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
-from . import DATA_DIR, T0, integrations, system, winapi
+from . import DATA_DIR, MAC, T0, WIN, integrations, system, winapi
 from .actions import (CONFIG_PATH, back_item, build_items, cleanup_scripts, execute, item_from, load_config,
                       save_config)
 from .feedback import Sounds, Speaker
@@ -26,6 +26,7 @@ from .live import LiveWatcher
 from .gestures import GestureEngine, GestureSettings, HandednessTracker, HandFeatures, Phase, extract_features
 from .tracker import CameraStatus, TrackerThread, TrackResult
 from .ui.dial import DialWindow
+from .ui.glass import load_fonts
 from .ui.notch import NotchWindow
 from .ui.pill import AMBER, BLUE, GRAY, GREEN, RED, PillWindow
 
@@ -59,34 +60,51 @@ HOTKEYS = {"ctrl+alt+space": (MOD_CONTROL | MOD_ALT, 0x20), "ctrl+shift+space": 
            "ctrl+alt+r": (MOD_CONTROL | MOD_ALT, 0x52), "win+alt+space": (MOD_WIN | MOD_ALT, 0x20)}
 HOTKEY_LABELS = {"ctrl+alt+space": "Ctrl + Alt + Space", "ctrl+shift+space": "Ctrl + Shift + Space",
                  "ctrl+alt+r": "Ctrl + Alt + R", "win+alt+space": "Win + Alt + Space"}
+if MAC:
+    HOTKEY_LABELS = {"ctrl+alt+space": "⌃⌥Space", "ctrl+shift+space": "⌃⇧Space", "ctrl+alt+r": "⌃⌥R",
+                     "win+alt+space": "⌥⌘Space"}
+elif not WIN:
+    HOTKEY_LABELS["win+alt+space"] = "Super + Alt + Space"
 HK_TOGGLE = 1
 NAV = {11: (0x25, -1), 12: (0x27, 1), 13: (0x26, -1), 14: (0x28, 1), 15: (0x0D, 0), 16: (0x1B, 0)}  # ← → ↑ ↓ ⏎ Esc
 
 
 class HotkeyWindow(QWidget):
-    """An invisible native window that receives RegisterHotKey messages."""
+    """An invisible native window that receives RegisterHotKey messages. On macOS (Carbon hotkeys) and
+    Linux (an X11 key grab) the same calls go to posix.py, and `triggered` fires all the same."""
     triggered = Signal(int)
 
     def __init__(self):
         super().__init__(None, Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-        self.hwnd = int(self.winId())
         self.active: set[int] = set()
+        self.backend = None
+        if WIN:
+            self.hwnd = int(self.winId())
+        else:
+            from . import posix
+            self.backend = posix.hotkeys(self.triggered.emit)   # a queued signal when it fires off-thread
 
     def register(self, hid: int, mods: int, vk: int) -> bool:
-        if sys.platform != "win32":
-            return False
-        ok = bool(winapi.user32.RegisterHotKey(self.hwnd, hid, mods, vk))
+        if not WIN:
+            ok = self.backend is not None and self.backend.register(hid, mods & ~MOD_NOREPEAT, vk)
+        else:
+            ok = bool(winapi.user32.RegisterHotKey(self.hwnd, hid, mods, vk))
         if ok:
             self.active.add(hid)
         return ok
 
     def unregister(self, hid: int) -> None:
-        if hid in self.active and sys.platform == "win32":
-            winapi.user32.UnregisterHotKey(self.hwnd, hid)
+        if hid in self.active:
+            if WIN:
+                winapi.user32.UnregisterHotKey(self.hwnd, hid)
+            elif self.backend is not None:
+                self.backend.unregister(hid)
         self.active.discard(hid)
 
     def nativeEvent(self, event_type, message):
+        if not WIN:
+            return False, 0
         try:
             msg = wintypes.MSG.from_address(int(message))
             if msg.message == 0x0312:                          # WM_HOTKEY
@@ -187,6 +205,7 @@ class RotaryApp(QObject):
         super().__init__()
         self.app = app
         self.quitting = False
+        load_fonts()                             # the bundled icon font on macOS / Linux
         self.app_icon = brand_icon()
         app.setWindowIcon(self.app_icon)
         self.cfg = load_config()
@@ -222,6 +241,9 @@ class RotaryApp(QObject):
         self._fs_checked = 0.0
         self.hotkeys = HotkeyWindow()
         self.hotkeys.triggered.connect(self._on_hotkey)
+        if not WIN:
+            from . import posix
+            posix.prepare_keyboard()           # macOS: has to happen on this (the main) thread
         self._hotkey_now = None
         self.keyboard_session = False      # opened from the keyboard or the notch: mouse + arrow keys work
         self._kb_fg = 0                    # the window that was in front when it opened
