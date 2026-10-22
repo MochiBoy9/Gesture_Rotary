@@ -98,7 +98,7 @@ class NotchWindow(QWidget):
         self.hovered = False
         self.peek = False
         self.active = False              # the rotary is open: the notch glows a little
-        self.hotkey = "Ctrl + Alt + Space"
+        self.hotkey = "⌃⌥Space" if sys.platform == "darwin" else "Ctrl + Alt + Space"
         self.s = 1.0
         self.k = 1.0
         self.high_contrast = False

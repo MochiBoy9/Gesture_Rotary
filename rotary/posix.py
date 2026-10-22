@@ -587,10 +587,18 @@ def set_login_item(cmd: list[str] | None, cwd: str = "") -> None:
         write_desktop_file(path, cmd, cwd, autostart=True)
 
 
+def desktop_quote(arg: str) -> str:
+    """Quote an Exec= argument the way the Desktop Entry spec wants (double quotes only)."""
+    if arg and not any(c in arg for c in ' \t\n"\'\\><~|&;$*?#()`'):
+        return arg
+    return '"' + "".join("\\" + c if c in '"`$\\' else c for c in arg) + '"'
+
+
 def write_desktop_file(path: Path, cmd: list[str], cwd: str = "", icon: str = "", autostart: bool = False) -> None:
     lines = ["[Desktop Entry]", "Type=Application", "Name=Gesture Rotary",
              "Comment=A rotary launcher you turn with your hand, the mouse or the keyboard",
-             f"Exec={shlex.join(cmd)}", "Terminal=false", "Categories=Utility;", "StartupWMClass=gesture-rotary"]
+             "Exec=" + " ".join(desktop_quote(c) for c in cmd), "Terminal=false", "Categories=Utility;",
+             "StartupWMClass=gesture-rotary"]
     if cwd:
         lines.append(f"Path={cwd}")
     if icon:

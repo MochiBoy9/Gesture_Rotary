@@ -1,4 +1,7 @@
-# PyInstaller spec — build with build_exe.bat
+# PyInstaller spec for Windows, macOS and Linux — build with tools/build.py (or build_exe.bat on Windows)
+#   Windows  dist/Gesture Rotary/Gesture Rotary.exe
+#   macOS    dist/Gesture Rotary.app
+#   Linux    dist/gesture-rotary/gesture-rotary
 import json
 import os
 import re
@@ -7,7 +10,11 @@ import sys
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 sys.path.insert(0, SPECPATH)
+from rotary import __version__  # noqa: E402
 from rotary.actions import DEFAULT_CONFIG  # noqa: E402
+
+WIN, MAC = sys.platform == "win32", sys.platform == "darwin"
+NAME = "Gesture Rotary" if WIN or MAC else "gesture-rotary"
 
 # Ship clean defaults (the first run then offers Quick nav for the apps it finds).
 default_cfg = os.path.join(workpath, "default_config.json")
@@ -16,11 +23,20 @@ with open(default_cfg, "w", encoding="utf-8") as f:
     json.dump(DEFAULT_CONFIG, f, indent=2)
 
 datas = [("models/hand_landmarker.task", "models"), ("models/blaze_face_short_range.tflite", "models"),
-         ("assets/icon.png", "assets"), (default_cfg, ".")]
-binaries, hiddenimports = [], ["cv2_enumerate_cameras", "websocket", "sqlite3", "winsound", "nturl2path",
-                               # Windows media controls (the notch's "now playing")
-                               "winrt.runtime", "winrt.windows.media.control", "winrt.windows.foundation",
-                               "winrt.windows.foundation.collections", "winrt.windows.storage.streams"]
+         ("assets/icon.png", "assets"), ("assets/rotary-icons.ttf", "assets"), (default_cfg, ".")]
+binaries, hiddenimports = [], ["cv2_enumerate_cameras", "websocket", "sqlite3", "nturl2path"]
+if WIN:
+    hiddenimports += ["winsound",
+                      # Windows media controls (the notch's "now playing")
+                      "winrt.runtime", "winrt.windows.media.control", "winrt.windows.foundation",
+                      "winrt.windows.foundation.collections", "winrt.windows.storage.streams"]
+elif MAC:
+    # pynput picks its backend at run time; Carbon / Security / Keychain go through ctypes.
+    hiddenimports += ["pynput.keyboard._darwin", "pynput.mouse._darwin", "pynput._util.darwin", "AppKit",
+                      "ApplicationServices", "Quartz", "AVFoundation", "cv2_enumerate_cameras.macos_backend"]
+else:
+    hiddenimports += ["pynput.keyboard._xorg", "pynput.mouse._xorg", "pynput._util.xorg", "Xlib",
+                      "Xlib.display", "Xlib.XK", "Xlib.error", "cv2_enumerate_cameras.linux_backend"]
 # MediaPipe: its native library and data files; the Python side is found by following our imports.
 # Its drawing helpers (matplotlib) and microphone recorder (sounddevice) are left out on purpose —
 # rotary/tracker.py hands MediaPipe stand-ins for them.
@@ -36,9 +52,9 @@ STDLIB_FOR_SCRIPTS = [
     "pathlib", "glob", "subprocess", "urllib.request", "urllib.parse", "http.client", "socket", "ssl",
     "hashlib", "base64", "uuid", "zipfile", "tarfile", "tempfile", "textwrap", "string", "itertools",
     "functools", "collections", "decimal", "fractions", "html", "html.parser", "xml.etree.ElementTree",
-    "email", "smtplib", "winreg", "winsound", "ctypes", "ctypes.wintypes", "platform", "getpass", "pprint",
+    "email", "smtplib", "ctypes", "platform", "getpass", "pprint",
     "logging", "asyncio", "threading", "queue", "wave", "calendar", "locale", "difflib", "secrets",
-]
+] + (["winreg", "winsound", "ctypes.wintypes"] if WIN else [])
 
 a = Analysis(
     ["gesture_rotary.py"],
@@ -64,7 +80,7 @@ DROP = re.compile(r"""(?ix)
   | Qt6(Quick|Qml|Pdf|Multimedia|TextToSpeech|OpenGL|VirtualKeyboard|ShaderTools|Svg Widgets)\w*\.dll
   | [\\/]translations[\\/] | [\\/]qml[\\/]
   | [\\/]plugins[\\/](tls|networkinformation|multimedia|texttospeech|qmltooling|scenegraph|position|sqldrivers)[\\/]
-  | [\\/]plugins[\\/]imageformats[\\/]q(pdf|webp|tiff|icns|tga|wbmp)\.dll
+  | [\\/]plugins[\\/]imageformats[\\/]q(pdf|webp|tiff|tga|wbmp)\.dll
   | [\\/]plugins[\\/]platforms[\\/]q(direct2d|minimal|offscreen)\.dll
   | mediapipe[\\/].*[\\/]test(s|data)?[\\/]
 """)
@@ -79,6 +95,34 @@ a.binaries = [e for e in a.binaries if keep(e)]
 a.datas = [e for e in a.datas if keep(e)]
 
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="Gesture Rotary", icon="assets/icon.ico",
-          console=False, upx=False, version=None)
-coll = COLLECT(exe, a.binaries, a.datas, name="Gesture Rotary", upx=False)
+# macOS: ad-hoc signed unless MACOS_SIGN_IDENTITY names a Developer ID (then also hardened, for notarisation).
+identity = os.environ.get("MACOS_SIGN_IDENTITY") or None
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name=NAME,
+          icon="assets/icon.ico" if WIN else "assets/icon.icns" if MAC else None,
+          console=False, upx=False, version=None, argv_emulation=False,
+          codesign_identity=identity if MAC else None,
+          entitlements_file="installer/macos/entitlements.plist" if MAC and identity else None)
+coll = COLLECT(exe, a.binaries, a.datas, name=NAME, upx=False)
+
+if MAC:
+    app = BUNDLE(
+        coll,
+        name="Gesture Rotary.app",
+        icon="assets/icon.icns",
+        bundle_identifier="app.gesturerotary",
+        version=__version__,
+        info_plist={
+            "CFBundleName": "Gesture Rotary",
+            "CFBundleDisplayName": "Gesture Rotary",
+            "CFBundleShortVersionString": __version__,
+            "CFBundleVersion": __version__,
+            "LSMinimumSystemVersion": "14.0",
+            "LSApplicationCategoryType": "public.app-category.productivity",
+            "NSHighResolutionCapable": True,
+            "NSRequiresAquaSystemAppearance": False,
+            "NSCameraUsageDescription": "Gesture Rotary watches for your hand so you can open and turn the "
+                                        "rotary with gestures. Video never leaves your Mac.",
+            "NSAppleEventsUsageDescription": "Gesture Rotary opens Terminal for commands you add to the rotary.",
+            "NSHumanReadableCopyright": "Gesture Rotary",
+        },
+    )

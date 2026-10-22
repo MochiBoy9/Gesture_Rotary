@@ -2210,7 +2210,8 @@ class WelcomePage(QWidget):
 
         c = Card("4 · Try it", "Raise your hand toward the camera. Close it into a fist, or hold your palm still, "
                                "and the rotary appears. No camera? Click the notch at the top of the screen, or "
-                               "press Ctrl + Alt + Space — then scroll to turn it and click to open.")
+                               f"press {'⌃⌥Space' if MAC else 'Ctrl + Alt + Space'} — then scroll to turn it and "
+                               "click to open.")
         tw = QWidget()
         th = QHBoxLayout(tw)
         th.setContentsMargins(14, 10, 14, 10)

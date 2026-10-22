@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Used only when the app is signed with a Developer ID (hardened runtime, for notarisation). -->
+<plist version="1.0">
+<dict>
+    <!-- The hand tracker reads the camera. -->
+    <key>com.apple.security.device.camera</key>
+    <true/>
+    <!-- Opening Terminal for "Run a command" items. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+    <!-- Python and MediaPipe load native libraries and generate code at run time. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>
