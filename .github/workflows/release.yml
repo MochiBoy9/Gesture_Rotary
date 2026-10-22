@@ -1,14 +1,17 @@
 name: Release
 
-# Two ways to publish a GitHub Release with the installers for Windows, macOS and Linux:
-#   - push a tag like v1.4.0 (matching rotary/__init__.py's __version__), or
+# Publishes a GitHub Release with the installers for Windows, macOS and Linux:
+#   - automatically, when a new __version__ in rotary/__init__.py reaches main (merge the version bump and
+#     v<version> is built and published; nothing happens if that release already exists), or
+#   - push a tag like v1.5.1 (matching __version__), or
 #   - Actions → Release → Run workflow, with the tag typed in (it's created on the chosen branch if it
-#     doesn't exist yet).
-# "Run workflow" with no tag, and pull requests that touch the packaging, only build them (download
-# them from the run's artifacts).
+#     doesn't exist yet). Leave the tag empty to publish the branch's own __version__.
+# Pull requests that touch the packaging only build (download the files from the run's artifacts).
 on:
   push:
+    branches: [main]
     tags: ["v*"]
+    paths: ["rotary/__init__.py"]     # main only; tag pushes always run
   pull_request:
     paths:
       - "Gesture Rotary.spec"
@@ -21,20 +24,64 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Publish as this release, e.g. v1.4.0 (empty = only build)"
+        description: "Publish as this release, e.g. v1.5.1 (empty = the branch's own version)"
         required: false
         default: ""
 
 permissions:
   contents: write
 
-env:
-  # The release being made: the pushed tag, or the one typed into "Run workflow" ('' = none).
-  RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.tag || '' }}
+concurrency:
+  group: release-${{ github.ref }}
 
 jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}          # the release to publish ('' = only build)
+      build: ${{ steps.plan.outputs.build }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: plan
+        name: Which release, if any
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' rotary/__init__.py)
+          build=true
+          auto=false        # the tag comes from __version__, not from the person releasing
+          case "$EVENT" in
+            push)
+              if [[ "$GITHUB_REF" == refs/tags/* ]]; then tag="$GITHUB_REF_NAME"; else tag="v$version" auto=true; fi ;;
+            workflow_dispatch)
+              if [ -n "$INPUT_TAG" ]; then tag="$INPUT_TAG"; else tag="v$version" auto=true; fi ;;
+            *)
+              tag="" ;;
+          esac
+          # An automatic release never overwrites one that's out already (type the tag to redo it).
+          if [ "$auto" = true ] && gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::$tag is already released, so this run doesn't publish anything."
+            tag=""
+            if [ "$EVENT" = push ]; then build=false; fi
+          fi
+          if [ -n "$tag" ]; then
+            t="${tag#v}"
+            if [ "${tag:0:1}" != "v" ] || [ "${t%%-*}" != "$version" ]; then
+              echo "::error::Can't release $tag from $GITHUB_REF_NAME: its rotary/__init__.py says __version__ = \"$version\". Run the workflow on the branch that has version ${t%%-*}, or set __version__ there first."
+              exit 1
+            fi
+            echo "::notice::Building and publishing $tag."
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build (${{ matrix.name }})
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -48,6 +95,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
+      RELEASE_TAG: ${{ needs.plan.outputs.tag }}
       QT_QPA_PLATFORM: offscreen
       UV_PYTHON_PREFERENCE: only-system
       UV_PROJECT_ENVIRONMENT: ${{ github.workspace }}/.venv
@@ -62,17 +110,6 @@ jobs:
         with:
           python-version: "3.13"
       - uses: astral-sh/setup-uv@v6
-
-      - name: The tag matches the app's version
-        if: env.RELEASE_TAG != ''
-        shell: bash
-        run: |
-          version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' rotary/__init__.py)
-          tag="${RELEASE_TAG#v}"
-          if [ "${RELEASE_TAG:0:1}" != "v" ] || [ "${tag%%-*}" != "$version" ]; then
-            echo "::error::Tag $RELEASE_TAG doesn't match __version__ $version in rotary/__init__.py (expected v$version)"
-            exit 1
-          fi
 
       - name: Fonts for Qt's offscreen platform on Windows
         if: runner.os == 'Windows'
@@ -118,9 +155,11 @@ jobs:
 
   publish:
     name: Publish the release
-    needs: build
-    if: needs.build.result == 'success' && (startsWith(github.ref, 'refs/tags/v') || inputs.tag != '')
+    needs: [plan, build]
+    if: needs.build.result == 'success' && needs.plan.outputs.tag != ''
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ needs.plan.outputs.tag }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v5

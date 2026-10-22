@@ -217,13 +217,19 @@ Fluent UI System Icons (MIT) placed on the Segoe Fluent Icons code points the ap
 ### Releasing
 
 1. Set the version in `rotary/__init__.py` and `pyproject.toml`, then `uv lock`, and add a section to `CHANGELOG.md`.
-2. Commit to `main`, then either push a tag (`git tag v1.4.0 && git push origin v1.4.0`), or open
-   *Actions → Release → Run workflow* on `main` and type the tag (e.g. `v1.4.0`).
+2. Get it onto `main` (merge the pull request). That's all: the *Release* workflow sees the new version and
+   publishes `v<version>`.
 
-The *Release* workflow tests and builds on Windows, macOS and Linux, then publishes a GitHub Release with
-the Setup.exe, the portable .zip, the .dmg, the Linux .tar.gz and `SHA256SUMS.txt`. Its notes are the
-changelog section plus `installer/RELEASE_NOTES.md`. *Run workflow* with the tag left empty builds the same
-files without publishing them; download them from the run's artifacts.
+The workflow tests and builds on Windows, macOS and Linux, then publishes a GitHub Release with the Setup.exe,
+the portable .zip, the .dmg, the Linux .tar.gz and `SHA256SUMS.txt`. Its notes are the changelog section plus
+`installer/RELEASE_NOTES.md`. Pushes to `main` that leave the version alone don't release anything, and an
+existing release is never overwritten automatically.
+
+To release by hand, push a tag (`git tag v1.5.1 && git push origin v1.5.1`), or open *Actions → Release → Run
+workflow*, pick the branch that has that version, and type the tag (or leave it empty for the branch's own
+version). The tag has to match `__version__` on that branch, or the run stops before building and says why.
+Typing the tag of an existing release rebuilds it and replaces its files. Pull requests that touch the packaging
+only build; download the files from the run's artifacts.
 
 The Mac app is signed ad hoc, so users right-click → Open the first time. To sign and notarise it instead, add these
 repository secrets:
