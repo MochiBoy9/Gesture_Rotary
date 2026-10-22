@@ -201,3 +201,24 @@ def test_data_dir_is_per_platform(monkeypatch):
         monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         assert expected in str(rotary._user_data_dir())
     assert Path(rotary._user_data_dir()).name == "GestureRotary"
+
+
+# ------------------------------------------------------------------ licenses (General → About)
+def test_every_license_the_about_card_lists_is_shipped():
+    from rotary.ui.settings import LICENSES
+    spec = (ROOT / "Gesture Rotary.spec").read_text(encoding="utf-8")
+    for _, rel in LICENSES:
+        assert (ROOT / rel).is_file(), rel
+        assert f'"{rel.split("/")[0]}"' in spec, f"add {rel} to the datas in Gesture Rotary.spec"
+    assert "MIT License" in (ROOT / "LICENSE").read_text(encoding="utf-8")
+
+
+def test_licenses_dialog_shows_each_text():
+    from PySide6.QtWidgets import QApplication
+    from rotary.ui.settings import LICENSES, LicensesDialog
+    QApplication.instance() or QApplication([])
+    d = LicensesDialog(start=1)
+    assert "THIRD-PARTY NOTICES" in d.text.toPlainText()
+    for row in range(len(LICENSES)):
+        d.list.setCurrentRow(row)
+        assert "missing" not in d.text.toPlainText()[:200]

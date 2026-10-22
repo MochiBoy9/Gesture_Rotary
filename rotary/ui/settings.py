@@ -12,14 +12,14 @@ import os
 import sys
 
 from PySide6.QtCore import QEvent, QFileInfo, QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QIcon, QImage, QKeySequence, QLinearGradient, QPainter,
+from PySide6.QtGui import (QColor, QFont, QFontDatabase, QFontMetricsF, QIcon, QImage, QKeySequence, QLinearGradient, QPainter,
                            QPainterPath, QPixmap, QRadialGradient)
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFileIconProvider,
                                QGridLayout, QHBoxLayout, QKeySequenceEdit, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QStackedWidget,
                                QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
-from .. import DATA_DIR, DEVICE, MAC, OS_NAME, WIN, __version__, apps, integrations, obs, system, winapi
+from .. import DATA_DIR, DEVICE, MAC, OS_NAME, ROOT, WIN, __version__, apps, integrations, obs, system, winapi
 from ..actions import open_target
 from ..actions import ACTION_TYPES, CONFIG_PATH, MEDIA_PRESETS, Item, build_items
 from ..gestures import EngineSnapshot, GestureSettings, Phase
@@ -2045,6 +2045,56 @@ class CameraPage(QWidget):
         self.view.update()
 
 
+# The license texts shipped next to the app (and at the top of the repo): (title, file).
+LICENSES = [("Gesture Rotary — MIT License", "LICENSE"), ("Third-party software", "THIRD_PARTY_NOTICES.txt"),
+            ("Apache License 2.0", "licenses/Apache-2.0.txt"), ("GNU LGPL 3.0", "licenses/LGPL-3.0.txt"),
+            ("GNU GPL 3.0", "licenses/GPL-3.0.txt"), ("GNU LGPL 2.1", "licenses/LGPL-2.1.txt"),
+            ("Python Software Foundation License", "licenses/Python.txt")]
+COPYRIGHT = "Copyright © 2026 MochiBoy9"
+
+
+class LicensesDialog(QDialog):
+    """Gesture Rotary's license, the third-party notices and the full license texts they refer to."""
+
+    def __init__(self, parent=None, start: int = 0):
+        super().__init__(parent)
+        self.setWindowTitle("Licenses")
+        self.setStyleSheet(stylesheet() + "QDialog { background: #18181c; }")
+        self.resize(980, 640)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(16)
+        self.list = QListWidget()
+        self.list.setFixedWidth(250)
+        self.list.setAccessibleName("Licenses")
+        for title, _ in LICENSES:
+            self.list.addItem(title)
+        root.addWidget(self.list)
+        right = QVBoxLayout()
+        right.setSpacing(10)
+        self.text = QPlainTextEdit()
+        self.text.setReadOnly(True)
+        self.text.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        self.text.setMinimumWidth(self.text.fontMetrics().horizontalAdvance("M" * 80) + 40)   # the texts' width
+        self.text.setAccessibleName("License text")
+        right.addWidget(self.text, 1)
+        close = QPushButton("Done")
+        close.clicked.connect(self.accept)
+        right.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
+        root.addLayout(right, 1)
+        self.list.currentRowChanged.connect(self._show)
+        self.list.setCurrentRow(start)
+
+    def _show(self, row: int) -> None:
+        if row < 0:
+            return
+        try:
+            self.text.setPlainText((ROOT / LICENSES[row][1]).read_text(encoding="utf-8"))
+        except OSError:
+            self.text.setPlainText(f"{LICENSES[row][1]} is missing from this copy of Gesture Rotary.\n"
+                                   "See https://github.com/MochiBoy9/Gesture_Rotary")
+
+
 class GeneralPage(QWidget):
     def __init__(self, win: "MainWindow"):
         super().__init__()
@@ -2093,6 +2143,15 @@ class GeneralPage(QWidget):
         self.python.setFixedWidth(300)
         self.python.changed.connect(lambda k: self.set("general", "python", k))
         c.add(Row("Python for code actions", "Your own Python has your packages", self.python))
+        v.addWidget(c)
+
+        c = Card("About")
+        b = QPushButton("View")
+        b.clicked.connect(lambda: LicensesDialog(self, 0).exec())
+        c.add(Row("License", f"MIT License · {COPYRIGHT}", b))
+        b = QPushButton("View")
+        b.clicked.connect(lambda: LicensesDialog(self, 1).exec())
+        c.add(Row("Third-party software", "Qt, MediaPipe, OpenCV, NumPy and more, each under its own license", b))
         v.addWidget(c)
 
         c = Card("Advanced")

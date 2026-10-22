@@ -53,6 +53,10 @@ def pyinstaller() -> Path:
     out = DIST / ("Gesture Rotary.app" if MAC else "Gesture Rotary" if WIN else "gesture-rotary")
     if not out.exists():
         raise SystemExit(f"PyInstaller didn't produce {out}")
+    if not MAC:
+        # The bundle has them inside _internal/ (for the app's About card); these are the ones people see.
+        shutil.copy(ROOT / "LICENSE", out / "LICENSE.txt")
+        shutil.copy(ROOT / "THIRD_PARTY_NOTICES.txt", out / "THIRD_PARTY_NOTICES.txt")
     return out
 
 
@@ -104,6 +108,7 @@ def package_mac(app: Path) -> list[Path]:
     run(["ditto", app, stage / app.name])                    # ditto keeps the bundle's symlinks and signatures
     (stage / "Applications").symlink_to("/Applications")
     shutil.copy(ROOT / "installer" / "macos" / "README.txt", stage / "Read me first.txt")
+    shutil.copy(ROOT / "LICENSE", stage / "License.txt")
     dmg = RELEASE / f"GestureRotary-{__version__}-macOS.dmg"
     dmg.unlink(missing_ok=True)
     for attempt in range(3):              # hdiutil sometimes reports "Resource busy" on build machines
@@ -142,6 +147,7 @@ def package_linux(app: Path) -> list[Path]:
     with tarfile.open(tgz, "w:gz") as tf:
         add(tf, ROOT / "installer" / "linux" / "install.sh", f"{name}/install.sh", 0o755)
         add(tf, ROOT / "installer" / "linux" / "README.txt", f"{name}/README.txt")
+        add(tf, ROOT / "LICENSE", f"{name}/LICENSE.txt")
         add(tf, ROOT / "assets" / "icon.png", f"{name}/gesture-rotary.png")
         for f in sorted(app.rglob("*")):
             add(tf, f, f"{name}/gesture-rotary/{f.relative_to(app)}")

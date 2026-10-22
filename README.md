@@ -218,4 +218,4 @@ MediaPipe's deep file paths break Windows' 260-character path limit in long fold
 Gesture Rotary is released under the [MIT License](LICENSE). The release builds also bundle Qt / PySide6,
 MediaPipe and its models, OpenCV, NumPy and other libraries, each under its own license (LGPL, Apache 2.0,
 BSD, MIT and others). [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) lists them, with the full texts in
-[licenses/](licenses); both ship inside every build.
+[licenses/](licenses). The app shows them all under *General → About*, and every download includes them.
