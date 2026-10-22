@@ -1,6 +1,6 @@
 [project]
 name = "gesture-rotary"
-version = "1.3.0"
+version = "1.4.0"
 description = "Gesture-controlled rotary launcher driven by any webcam, or a notch at the top of the screen"
 requires-python = ">=3.12"
 dependencies = [
@@ -8,17 +8,20 @@ dependencies = [
     "mediapipe>=1.1.1",
     "numpy>=2.5.4",
     "opencv-python-headless>=5.0.0",
+    "pynput>=1.8.1; sys_platform != 'win32'",
     "pyside6-essentials>=6.12.0",
     "websocket-client>=1.9.2",
-    "winrt-runtime>=3.2.1",
-    "winrt-windows-foundation>=3.2.1",
-    "winrt-windows-foundation-collections>=3.2.1",
-    "winrt-windows-media-control>=3.2.1",
-    "winrt-windows-storage-streams>=3.2.1",
+    "winrt-runtime>=3.2.1; sys_platform == 'win32'",
+    "winrt-windows-foundation>=3.2.1; sys_platform == 'win32'",
+    "winrt-windows-foundation-collections>=3.2.1; sys_platform == 'win32'",
+    "winrt-windows-media-control>=3.2.1; sys_platform == 'win32'",
+    "winrt-windows-storage-streams>=3.2.1; sys_platform == 'win32'",
 ]
 
 [dependency-groups]
 dev = [
+    "fonttools>=4.60.0",
+    "pillow>=11.0.0",
     "pyinstaller>=6.22.3",
     "pytest>=9.1.1",
 ]
@@ -32,4 +35,6 @@ override-dependencies = [
     "opencv-python; sys_platform == 'never'",
     "matplotlib; sys_platform == 'never'",
     "sounddevice; sys_platform == 'never'",
+    # pynput's uinput backend (Linux without X11); we use its X11 backend, so skip compiling evdev.
+    "evdev; sys_platform == 'never'",
 ]

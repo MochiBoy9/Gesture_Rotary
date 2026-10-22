@@ -1,7 +1,8 @@
 """Popular apps: detection, ready-made actions, and Quick nav rings.
 
 Each catalogue entry knows how to find the app (Start menu, known install paths,
-Steam libraries), how to launch or switch to it, and which actions make sense for it.
+Steam libraries; the Applications folder on macOS, the apps menu on Linux), how to launch
+or switch to it, and which actions make sense for it.
 Only installed apps are offered. A "Quick nav" item on the rotary opens a second ring
 with that app's actions (its games, scenes, recent projects…)."""
 from __future__ import annotations
@@ -10,15 +11,17 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 import nturl2path
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from . import apps, obs
+from . import LINUX, MAC, OS_NAME, WIN, apps, obs
 
 log = logging.getLogger(__name__)
 QUICKNAV_MAX = 11          # + Back = 12 slots on the ring
@@ -43,6 +46,39 @@ def web(url: str) -> dict:
     return {"type": "browser", "url": url}
 
 
+def shortcut(k: str, mac: str | None = None) -> str:
+    """An app's shortcut as written for Windows; on a Mac, Ctrl becomes Cmd unless `mac` says otherwise."""
+    if not MAC:
+        return k
+    return mac or "+".join("cmd" if p == "ctrl" else p for p in k.split("+"))
+
+
+MAC_SYMBOLS = {"cmd": "⌘", "win": "⌘", "ctrl": "⌃", "alt": "⌥", "shift": "⇧", "esc": "⎋", "enter": "↩", "up": "↑",
+               "down": "↓", "left": "←", "right": "→", "space": "Space", "tab": "⇥"}
+
+
+def key_label(k: str) -> str:
+    """'ctrl+shift+m' → 'Ctrl+Shift+M' (on a Mac, 'cmd+shift+m' → '⇧⌘M')."""
+    parts = k.split("+")
+    if MAC:
+        order = {"ctrl": 0, "alt": 1, "shift": 2, "cmd": 3, "win": 3}
+        mods = sorted((p for p in parts[:-1] if p in order), key=order.get)
+        last = parts[-1]
+        return "".join(MAC_SYMBOLS[m] for m in mods) + MAC_SYMBOLS.get(last, last.upper())
+    return "+".join(p.upper() if len(p) <= 3 and p not in ("ctrl", "alt", "win") else p.title() for p in parts)
+
+
+def user_config(*parts: str) -> str:
+    """An app's settings folder: %APPDATA%\\… on Windows, ~/Library/Application Support/… on macOS, ~/.config/…"""
+    if WIN:
+        base = os.environ.get("APPDATA", "")
+    elif MAC:
+        base = str(Path.home() / "Library" / "Application Support")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return os.path.join(base, *parts)
+
+
 @dataclass
 class Spec:
     id: str
@@ -53,13 +89,20 @@ class Spec:
     start: tuple = ()          # Start-menu names
     exes: tuple = ()           # candidate program paths (env vars, * globs)
     process: str = ""          # exe name of its main window (switching / app shortcuts)
-    builtin: bool = False      # part of Windows
+    builtin: bool = False      # part of the operating system
     steam_appid: str = ""      # also installable through Steam
     steam_exe: str = ""        # program path inside the Steam install folder
     blurb: str = ""
     actions: Callable | None = None   # (App) -> list[dict]
     dynamic: Callable | None = None   # (App, cfg) -> list[dict]   (may be slow; cached)
     extra: dict = field(default_factory=dict)
+    mac: tuple = ()            # its name in the Applications folder, when that differs from `start`
+    linux: tuple = ()          # its name in the Linux apps menu, when that differs
+    systems: str = "win32 darwin linux"
+
+    @property
+    def names(self) -> tuple:
+        return self.start + (self.mac if MAC else self.linux if LINUX else ())
 
 
 @dataclass
@@ -92,10 +135,12 @@ class App:
         return a
 
     def keys(self, k: str, restore: bool = True, prefer_title: str = "") -> dict:
-        a = {"type": "window_keys", "process": self.spec.process, "keys": k, "restore": restore,
-             "label": self.spec.name}
+        a = {"type": "window_keys", "process": self.spec.process or os.path.basename(self.exe), "keys": k,
+             "restore": restore, "label": self.spec.name}
         if prefer_title:
             a["title"] = prefer_title
+        if MAC and self.exe.endswith(".app"):
+            a["bundle"] = self.exe
         return a
 
     def it(self, name: str, subtitle: str, glyph: str, action: dict, tint: str | None = None,
@@ -132,12 +177,13 @@ def _steam_games(a: App, cfg: dict) -> list[dict]:
 
 
 def _discord(a: App) -> list[dict]:
+    mute, deafen = shortcut("ctrl+shift+m"), shortcut("ctrl+shift+d")
     return [
         a.open_item(),
         a.it("Direct messages", "Friends & DMs", "E8BD", open_uri("discord://-/channels/@me"), icon=""),
-        a.it("Mute mic", "Discord's Ctrl+Shift+M", "E720", a.keys("ctrl+shift+m"), icon=""),
-        a.it("Deafen", "Discord's Ctrl+Shift+D", "E74F", a.keys("ctrl+shift+d"), icon=""),
-        a.it("Quick switcher", "Jump to a server or chat", "E721", a.keys("ctrl+k", restore=False), icon=""),
+        a.it("Mute mic", f"Discord's {key_label(mute)}", "E720", a.keys(mute), icon=""),
+        a.it("Deafen", f"Discord's {key_label(deafen)}", "E74F", a.keys(deafen), icon=""),
+        a.it("Quick switcher", "Jump to a server or chat", "E721", a.keys(shortcut("ctrl+k"), restore=False), icon=""),
     ]
 
 
@@ -164,7 +210,8 @@ def uri_to_path(uri: str) -> str:
     """file:///c%3A/Users/x → c:\\Users\\x ('' for remote / non-file URIs)."""
     if not uri.startswith("file://"):
         return ""
-    path = nturl2path.url2pathname(urllib.parse.unquote(urllib.parse.urlparse(uri).path))
+    to_path = nturl2path.url2pathname if os.name == "nt" else urllib.request.url2pathname
+    path = to_path(urllib.parse.unquote(urllib.parse.urlparse(uri).path))
     if os.name == "nt" and path.startswith("\\") and len(path) > 2 and path[2] == ":":
         path = path[1:]
     return path
@@ -258,11 +305,18 @@ def _code_recents(a: App, cfg: dict) -> list[dict]:
 
 def _claude(a: App) -> list[dict]:
     out = [a.open_item(), a.it("New chat", "claude.ai in your browser", "E8BD", web("https://claude.ai/new"), icon="")]
-    cli = apps.which_cli("claude") or apps.first_existing(r"%USERPROFILE%\.local\bin\claude.exe")
-    if cli:
-        term = "wt.exe" if apps.which_cli("wt") else "cmd /k"
-        out.append(a.it("Claude Code", "In a new terminal", "E756",
-                        {"type": "shell", "command": f'start "" {term} claude', "hidden": True}, icon=""))
+    if WIN:
+        cli = apps.which_cli("claude") or apps.first_existing(r"%USERPROFILE%\.local\bin\claude.exe")
+        if cli:
+            term = "wt.exe" if apps.which_cli("wt") else "cmd /k"
+            out.append(a.it("Claude Code", "In a new terminal", "E756",
+                            {"type": "shell", "command": f'start "" {term} claude', "hidden": True}, icon=""))
+    else:
+        cli = apps.which_cli("claude") or apps.first_existing("~/.local/bin/claude", "/opt/homebrew/bin/claude",
+                                                              "/usr/local/bin/claude")
+        if cli:
+            out.append(a.it("Claude Code", "In a new terminal", "E756",
+                            {"type": "shell", "command": f'"{cli}"', "hidden": False}, icon=""))
     return out
 
 
@@ -277,7 +331,8 @@ def _browser(a: App) -> list[dict]:
         a.open_item(),
         a.it("New window", "", "E8A7", a.launch(new_flag), icon=""),
         a.it("Private window", "Nothing saved", "E72E", a.launch(private), icon=""),
-        a.it("Reopen tab", "Bring back the last closed tab", "E7A7", a.keys("ctrl+shift+t", restore=False), icon=""),
+        a.it("Reopen tab", "Bring back the last closed tab", "E7A7", a.keys(shortcut("ctrl+shift+t"), restore=False),
+             icon=""),
     ]
 
 
@@ -287,33 +342,38 @@ def _media(a: App) -> list[dict]:
             a.it("Next", "", "E893", keys("media_next"), icon=""),
             a.it("Previous", "", "E892", keys("media_prev"), icon="")]
     if a.spec.id == "spotify":
-        out.append(a.it("Search", "Find music", "E721", a.keys("ctrl+l", restore=False), icon=""))
+        out.append(a.it("Search", "Find music", "E721", a.keys(shortcut("ctrl+l"), restore=False), icon=""))
     return out
 
 
 def _zoom(a: App) -> list[dict]:
+    mute, video = shortcut("alt+a", "cmd+shift+a"), shortcut("alt+v", "cmd+shift+v")
     return [a.open_item(),
-            a.it("Mute / unmute", "Zoom's Alt+A", "E720", a.keys("alt+a", prefer_title="Meeting"), icon=""),
-            a.it("Video on / off", "Zoom's Alt+V", "E714", a.keys("alt+v", prefer_title="Meeting"), icon="")]
+            a.it("Mute / unmute", f"Zoom's {key_label(mute)}", "E720", a.keys(mute, prefer_title="Meeting"), icon=""),
+            a.it("Video on / off", f"Zoom's {key_label(video)}", "E714", a.keys(video, prefer_title="Meeting"),
+                 icon="")]
 
 
 def _teams(a: App) -> list[dict]:
+    mute, cam = shortcut("ctrl+shift+m"), shortcut("ctrl+shift+o")
     return [a.open_item(),
-            a.it("Mute / unmute", "Teams' Ctrl+Shift+M", "E720", a.keys("ctrl+shift+m"), icon=""),
-            a.it("Camera on / off", "Teams' Ctrl+Shift+O", "E714", a.keys("ctrl+shift+o"), icon="")]
+            a.it("Mute / unmute", f"Teams' {key_label(mute)}", "E720", a.keys(mute), icon=""),
+            a.it("Camera on / off", f"Teams' {key_label(cam)}", "E714", a.keys(cam), icon="")]
 
 
 def _jump(label: str, k: str) -> Callable:
     def build(a: App) -> list[dict]:
-        return [a.open_item(), a.it(label, f"Shortcut {k.replace('+', ' + ').title()}", "E721",
-                                    a.keys(k, restore=False), icon="")]
+        sk = shortcut(k)
+        sub = f"Shortcut {key_label(sk)}" if MAC else f"Shortcut {k.replace('+', ' + ').title()}"
+        return [a.open_item(), a.it(label, sub, "E721", a.keys(sk, restore=False), icon="")]
     return build
 
 
 def _roblox_studio(a: App) -> list[dict]:
+    play, stop = ("f5", "shift+f5") if not MAC else ("cmd+p", "shift+f5")
     return [a.open_item(),
-            a.it("Play test", "F5", "E768", a.keys("f5", restore=False), icon=""),
-            a.it("Stop", "Shift + F5", "E71A", a.keys("shift+f5", restore=False), icon="")]
+            a.it("Play test", key_label(play) if MAC else "F5", "E768", a.keys(play, restore=False), icon=""),
+            a.it("Stop", key_label(stop) if MAC else "Shift + F5", "E71A", a.keys(stop, restore=False), icon="")]
 
 
 def _windows(a: App) -> list[dict]:
@@ -329,6 +389,39 @@ def _windows(a: App) -> list[dict]:
         item("Task Manager", "", "E9D9", t, keys("ctrl+shift+esc")),
         item("File Explorer", "", "E8B7", t, {"type": "app", "target": "explorer.exe"}),
         item("Settings", "Windows Settings", "E713", t, open_uri("ms-settings:")),
+        item("Mute", "Sound on / off", "E74F", t, keys("volume_mute")),
+    ]
+
+
+def _macos(a: App) -> list[dict]:
+    t = a.spec.tint
+    return [
+        item("Lock", "Lock your Mac", "E72E", t, keys("ctrl+cmd+q")),
+        item("Mission Control", "All your windows", "E7C4", t, keys("ctrl+up")),
+        item("Spotlight", "Search your Mac", "E721", t, keys("cmd+space")),
+        item("Screenshot", "Capture the screen", "E722", t, keys("cmd+shift+5")),
+        item("Emoji", "Emoji & symbols", "E76E", t, keys("ctrl+cmd+space")),
+        item("Launchpad", "All your apps", "F0E2", t, {"type": "app", "target": "/System/Applications/Launchpad.app"}),
+        item("Finder", "", "E8B7", t, {"type": "app", "target": "/System/Library/CoreServices/Finder.app"}),
+        item("Activity Monitor", "", "E9D9", t,
+             {"type": "app", "target": "/System/Applications/Utilities/Activity Monitor.app"}),
+        item("Settings", "System Settings", "E713", t, open_uri("x-apple.systempreferences:")),
+        item("Mute", "Sound on / off", "E74F", t, keys("volume_mute")),
+        item("Sleep", "Put your Mac to sleep", "E708", t, {"type": "shell", "command": "pmset sleepnow"}),
+    ]
+
+
+def _linux(a: App) -> list[dict]:
+    t = a.spec.tint
+    return [
+        item("Lock", "Lock the screen", "E72E", t, {"type": "shell", "command": "loginctl lock-session"}),
+        item("Overview", "All your windows", "E7C4", t, keys("win")),
+        item("Screenshot", "Capture the screen", "E722", t, keys("printscreen")),
+        item("Files", "Your home folder", "E8B7", t, open_uri("~")),
+        item("Terminal", "Command line", "E756", t,
+             {"type": "app", "target": "x-terminal-emulator", "fallback": "gnome-terminal"}),
+        item("Settings", "System settings", "E713", t,
+             {"type": "app", "target": "gnome-control-center", "fallback": "systemsettings"}),
         item("Mute", "Sound on / off", "E74F", t, keys("volume_mute")),
     ]
 
@@ -357,7 +450,7 @@ def _media_keys(a: App) -> list[dict]:
 # =========================================================================== catalogue
 PF, PF86, LAD, AD = r"%ProgramFiles%", r"%ProgramFiles(x86)%", r"%LOCALAPPDATA%", r"%APPDATA%"
 
-CATALOG: list[Spec] = [
+_ALL: list[Spec] = [
     # ---- gaming
     Spec("steam", "Steam", "Gaming", "E7FC", "#3D8BD9", ("Steam",), (rf"{PF86}\Steam\steam.exe",),
          blurb="Your games (most recently played first), library, Big Picture, friends, store.",
@@ -368,27 +461,28 @@ CATALOG: list[Spec] = [
     Spec("battlenet", "Battle.net", "Gaming", "E7FC", "#148EFF", ("Battle.net",),
          (rf"{PF86}\Battle.net\Battle.net Launcher.exe",), "Battle.net.exe", actions=_simple),
     Spec("ea", "EA app", "Gaming", "E7FC", "#FF4747", ("EA",),
-         (rf"{PF}\Electronic Arts\EA Desktop\EA Desktop\EADesktop.exe",), "EADesktop.exe", actions=_simple),
+         (rf"{PF}\Electronic Arts\EA Desktop\EA Desktop\EADesktop.exe",), "EADesktop.exe", actions=_simple,
+         mac=("EA app",)),
     Spec("ubisoft", "Ubisoft Connect", "Gaming", "E7FC", "#2A7DFF", ("Ubisoft Connect",),
          (rf"{PF86}\Ubisoft\Ubisoft Game Launcher\UbisoftConnect.exe",), "UbisoftConnect.exe", actions=_simple),
     Spec("gog", "GOG GALAXY", "Gaming", "E7FC", "#8A4BCF", ("GOG GALAXY",),
          (rf"{PF86}\GOG Galaxy\GalaxyClient.exe",), "GalaxyClient.exe", actions=_simple),
-    Spec("xbox", "Xbox", "Gaming", "E7FC", "#107C10", ("Xbox",), actions=_simple),
+    Spec("xbox", "Xbox", "Gaming", "E7FC", "#107C10", ("Xbox",), actions=_simple, systems="win32"),
     Spec("minecraft", "Minecraft", "Gaming", "E7FC", "#5BA33B", ("Minecraft Launcher", "Minecraft"), actions=_simple),
     Spec("roblox", "Roblox", "Gaming", "E7FC", "#E2231A", ("Roblox Player", "Roblox"),
          (rf"{LAD}\Roblox\Versions\*\RobloxPlayerBeta.exe",), "RobloxPlayerBeta.exe", actions=_simple),
     Spec("roblox_studio", "Roblox Studio", "Creative", "E70F", "#00A2FF", ("Roblox Studio",),
          (rf"{LAD}\Roblox\Versions\*\RobloxStudioBeta.exe",), "RobloxStudioBeta.exe",
-         blurb="Open Studio, play-test and stop.", actions=_roblox_studio),
+         blurb="Open Studio, play-test and stop.", actions=_roblox_studio, mac=("RobloxStudio",)),
     Spec("gamebar", "Xbox Game Bar", "Gaming", "E7FC", "#107C10", builtin=True,
-         blurb="Record clips, screenshots and the Game Bar overlay.", actions=_gamebar),
+         blurb="Record clips, screenshots and the Game Bar overlay.", actions=_gamebar, systems="win32"),
     # ---- creative & streaming
     Spec("obs", "OBS Studio", "Creative", "E714", "#7B61FF", ("OBS Studio",),
          (rf"{PF}\obs-studio\bin\64bit\obs64.exe",), "obs64.exe", steam_appid="1905180",
          steam_exe=r"bin\64bit\obs64.exe",
          blurb="Record, stream, replay, virtual camera, mic and every scene. Works without setup when OBS "
                "is closed; turn on Tools → WebSocket Server Settings for control while it's open.",
-         actions=_obs, dynamic=_obs_scenes),
+         actions=_obs, dynamic=_obs_scenes, mac=("OBS",)),
     Spec("blender", "Blender", "Creative", "E70F", "#F5792A", ("Blender",),
          (rf"{PF}\Blender Foundation\Blender*\blender.exe",), "blender.exe", actions=_simple),
     Spec("photoshop", "Photoshop", "Creative", "E70F", "#31A8FF", ("Adobe Photoshop",),
@@ -410,7 +504,7 @@ CATALOG: list[Spec] = [
     Spec("teams", "Microsoft Teams", "Chat", "E716", "#5B5FC7", ("Microsoft Teams", "Microsoft Teams (work or school)"),
          (), "ms-teams.exe", actions=_teams),
     Spec("zoom", "Zoom", "Chat", "E714", "#0B5CFF", ("Zoom Workplace", "Zoom"), (rf"{AD}\Zoom\bin\Zoom.exe",),
-         "Zoom.exe", actions=_zoom),
+         "Zoom.exe", actions=_zoom, mac=("zoom.us",)),
     Spec("whatsapp", "WhatsApp", "Chat", "E8BD", "#25D366", ("WhatsApp",), (), "WhatsApp.exe", actions=_simple),
     Spec("telegram", "Telegram", "Chat", "E8BD", "#2AABEE", ("Telegram Desktop", "Telegram"),
          (rf"{AD}\Telegram Desktop\Telegram.exe",), "Telegram.exe", actions=_simple),
@@ -420,20 +514,22 @@ CATALOG: list[Spec] = [
     Spec("vscode", "Visual Studio Code", "Code & AI", "E943", "#0078D4", ("Visual Studio Code",),
          (rf"{LAD}\Programs\Microsoft VS Code\Code.exe", rf"{PF}\Microsoft VS Code\Code.exe"), "Code.exe",
          blurb="Open, new window, and your recent projects.", actions=_code_like, dynamic=_code_recents,
-         extra={"storage": rf"{AD}\Code\User\globalStorage"}),
+         extra={"storage": user_config("Code", "User", "globalStorage")}),
     Spec("cursor", "Cursor", "Code & AI", "E943", "#6B6B75", ("Cursor",), (rf"{LAD}\Programs\cursor\Cursor.exe",),
-         "Cursor.exe", actions=_code_like, dynamic=_code_recents, extra={"storage": rf"{AD}\Cursor\User\globalStorage"}),
+         "Cursor.exe", actions=_code_like, dynamic=_code_recents,
+         extra={"storage": user_config("Cursor", "User", "globalStorage")}),
     Spec("claude", "Claude", "Code & AI", "E8BD", "#D97757", ("Claude",), (rf"{LAD}\AnthropicClaude\claude.exe",),
          "claude.exe", blurb="The Claude app, a new chat, and Claude Code in a terminal.", actions=_claude),
     Spec("chatgpt", "ChatGPT", "Code & AI", "E8BD", "#10A37F", ("ChatGPT",), (), "ChatGPT.exe", actions=_chatgpt),
     Spec("visual_studio", "Visual Studio", "Code & AI", "E943", "#865FCF", ("Visual Studio 2022", "Visual Studio"),
-         (rf"{PF}\Microsoft Visual Studio\2022\*\Common7\IDE\devenv.exe",), "devenv.exe", actions=_simple),
+         (rf"{PF}\Microsoft Visual Studio\2022\*\Common7\IDE\devenv.exe",), "devenv.exe", actions=_simple,
+         systems="win32"),
     Spec("github_desktop", "GitHub Desktop", "Code & AI", "E943", "#6E40C9", ("GitHub Desktop",),
          (rf"{LAD}\GitHubDesktop\GitHubDesktop.exe",), "GitHubDesktop.exe", actions=_simple),
     Spec("terminal", "Terminal", "Code & AI", "E756", "#30D158", ("Terminal", "Windows Terminal"), (),
          "WindowsTerminal.exe", actions=_simple),
     Spec("docker", "Docker Desktop", "Code & AI", "E943", "#1D63ED", ("Docker Desktop",),
-         (rf"{PF}\Docker\Docker\Docker Desktop.exe",), "Docker Desktop.exe", actions=_simple),
+         (rf"{PF}\Docker\Docker\Docker Desktop.exe",), "Docker Desktop.exe", actions=_simple, mac=("Docker",)),
     # ---- browsers
     Spec("chrome", "Google Chrome", "Browsers", "E774", "#4285F4", ("Google Chrome",),
          (rf"{PF}\Google\Chrome\Application\chrome.exe", rf"{PF86}\Google\Chrome\Application\chrome.exe",
@@ -443,10 +539,11 @@ CATALOG: list[Spec] = [
          "msedge.exe", actions=_browser, extra={"private": "--inprivate"}),
     Spec("firefox", "Firefox", "Browsers", "E774", "#FF7139", ("Firefox", "Mozilla Firefox"),
          (rf"{PF}\Mozilla Firefox\firefox.exe",), "firefox.exe", actions=_browser,
-         extra={"private": "-private-window", "new": "-new-window"}),
+         extra={"private": "-private-window", "new": "-new-window"}, linux=("Firefox Web Browser",)),
     Spec("brave", "Brave", "Browsers", "E774", "#FB542B", ("Brave",),
          (rf"{PF}\BraveSoftware\Brave-Browser\Application\brave.exe",
-          rf"{LAD}\BraveSoftware\Brave-Browser\Application\brave.exe"), "brave.exe", actions=_browser),
+          rf"{LAD}\BraveSoftware\Brave-Browser\Application\brave.exe"), "brave.exe", actions=_browser,
+         mac=("Brave Browser",), linux=("Brave Web Browser",)),
     Spec("opera_gx", "Opera GX", "Browsers", "E774", "#FA1E4E", ("Opera GX Browser", "Opera GX"),
          (rf"{LAD}\Programs\Opera GX\opera.exe",), "opera.exe", actions=_browser, extra={"private": "--private"}),
     Spec("vivaldi", "Vivaldi", "Browsers", "E774", "#EF3939", ("Vivaldi",), (rf"{LAD}\Vivaldi\Application\vivaldi.exe",),
@@ -455,30 +552,40 @@ CATALOG: list[Spec] = [
     Spec("spotify", "Spotify", "Media", "E8D6", "#1DB954", ("Spotify",), (rf"{AD}\Spotify\Spotify.exe",),
          "Spotify.exe", blurb="Open, play/pause, next, previous and search.", actions=_media),
     Spec("apple_music", "Apple Music", "Media", "E8D6", "#FA2D48", ("Apple Music",), (), "AppleMusic.exe",
-         actions=_media),
+         actions=_media, mac=("Music",), systems="win32 darwin"),
     Spec("vlc", "VLC", "Media", "E714", "#FF8800", ("VLC media player",), (rf"{PF}\VideoLAN\VLC\vlc.exe",), "vlc.exe",
-         actions=_media),
-    Spec("netflix", "Netflix", "Media", "E714", "#E50914", ("Netflix",), actions=_simple),
+         actions=_media, mac=("VLC",)),
+    Spec("netflix", "Netflix", "Media", "E714", "#E50914", ("Netflix",), actions=_simple, systems="win32"),
     # ---- productivity
     Spec("notion", "Notion", "Productivity", "E8A5", "#5F5F66", ("Notion",), (rf"{LAD}\Programs\Notion\Notion.exe",),
          "Notion.exe", actions=_jump("Search", "ctrl+p")),
     Spec("obsidian", "Obsidian", "Productivity", "E8A5", "#7C3AED", ("Obsidian",),
          (rf"{LAD}\Programs\Obsidian\Obsidian.exe", rf"{LAD}\Obsidian\Obsidian.exe"), "Obsidian.exe",
          actions=_jump("Quick switcher", "ctrl+o")),
-    Spec("word", "Word", "Productivity", "E8A5", "#2B579A", ("Word",), (), "WINWORD.EXE", actions=_simple),
-    Spec("excel", "Excel", "Productivity", "E8A5", "#217346", ("Excel",), (), "EXCEL.EXE", actions=_simple),
+    Spec("word", "Word", "Productivity", "E8A5", "#2B579A", ("Word",), (), "WINWORD.EXE", actions=_simple,
+         mac=("Microsoft Word",)),
+    Spec("excel", "Excel", "Productivity", "E8A5", "#217346", ("Excel",), (), "EXCEL.EXE", actions=_simple,
+         mac=("Microsoft Excel",)),
     Spec("powerpoint", "PowerPoint", "Productivity", "E8A5", "#D24726", ("PowerPoint",), (), "POWERPNT.EXE",
-         actions=_simple),
+         actions=_simple, mac=("Microsoft PowerPoint",)),
     Spec("outlook", "Outlook", "Productivity", "E715", "#0078D4", ("Outlook", "Outlook (new)"), (), "olk.exe",
-         actions=_simple),
-    # ---- Windows
-    Spec("windows", "Windows", "Windows", "E713", "#8E8E93", builtin=True,
-         blurb="Lock, desktop, task view, snip, clipboard, emoji, quick settings and more.", actions=_windows),
-    Spec("media_keys", "Media controls", "Windows", "E768", "#FF375F", builtin=True,
+         actions=_simple, mac=("Microsoft Outlook",)),
+    # ---- the operating system
+    Spec("windows", "Windows", OS_NAME, "E713", "#8E8E93", builtin=True,
+         blurb="Lock, desktop, task view, snip, clipboard, emoji, quick settings and more.", actions=_windows,
+         systems="win32"),
+    Spec("macos", "macOS", OS_NAME, "E713", "#8E8E93", builtin=True,
+         blurb="Lock, Mission Control, Spotlight, screenshots, emoji, Launchpad and more.", actions=_macos,
+         systems="darwin"),
+    Spec("linux", "Desktop", OS_NAME, "E713", "#8E8E93", builtin=True,
+         blurb="Lock, overview, screenshots, files, terminal and settings.", actions=_linux, systems="linux"),
+    Spec("media_keys", "Media controls", OS_NAME, "E768", "#FF375F", builtin=True,
          blurb="Play/pause, skip and volume for whatever is playing.", actions=_media_keys),
 ]
+# Only what exists on this system (Windows' Game Bar has no place on a Mac).
+CATALOG: list[Spec] = [s for s in _ALL if ("linux" if LINUX else sys.platform) in s.systems.split()]
 BY_ID = {s.id: s for s in CATALOG}
-CATEGORIES = ["Gaming", "Chat", "Creative", "Code & AI", "Browsers", "Media", "Productivity", "Windows"]
+CATEGORIES = ["Gaming", "Chat", "Creative", "Code & AI", "Browsers", "Media", "Productivity", OS_NAME]
 
 
 # =========================================================================== detection
@@ -489,9 +596,9 @@ _detected_at = 0.0
 
 
 def _detect_one(spec: Spec, steam: dict) -> App:
-    exe = apps.first_existing(*spec.exes) if spec.exes else ""
-    sa = apps.find_start_app(*spec.start) if spec.start else None
-    if spec.steam_appid and spec.steam_appid in steam and not exe:
+    exe = apps.first_existing(*spec.exes) if spec.exes and WIN else ""
+    sa = apps.find_start_app(*spec.names) if spec.names else None
+    if WIN and spec.steam_appid and spec.steam_appid in steam and not exe:
         p = os.path.join(steam[spec.steam_appid].install_dir, spec.steam_exe)
         exe = p if os.path.exists(p) else exe
     if sa and sa.exe and not exe:

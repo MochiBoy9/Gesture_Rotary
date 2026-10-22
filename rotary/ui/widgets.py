@@ -68,7 +68,7 @@ def _stylesheet() -> str:
         background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); border-radius: 8px;
         padding: 6px 10px; selection-background-color: {ACCENT}; }}
     QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{ border: 1px solid {ACCENT}; }}
-    QPlainTextEdit {{ font-family: 'Cascadia Mono', 'Consolas'; font-size: 12.5px; }}
+    QPlainTextEdit {{ font-family: 'Cascadia Mono', 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace; font-size: 12.5px; }}
     QComboBox::drop-down {{ border: none; width: 22px; }}
     QComboBox QAbstractItemView {{ background: #2a2a30; border: 1px solid rgba(255,255,255,0.12);
         selection-background-color: {ACCENT}; outline: none; padding: 4px; }}
@@ -81,7 +81,7 @@ def _stylesheet() -> str:
     QPushButton#accent:hover {{ background: #2b95ff; }}
     QPushButton#danger {{ color: #FF6961; }}
     QToolButton#icon {{ background: rgba(255,255,255,0.07); border: none; border-radius: 7px;
-        font-family: 'Segoe Fluent Icons'; font-size: 13px; min-width: 30px; min-height: 28px; }}
+        font-family: 'Segoe Fluent Icons', 'Rotary Icons'; font-size: 13px; min-width: 30px; min-height: 28px; }}
     QToolButton#icon:hover {{ background: rgba(255,255,255,0.14); }}
     QToolButton#icon:disabled {{ color: rgba(255,255,255,0.25); }}
     QSlider::groove:horizontal {{ height: 4px; background: rgba(255,255,255,0.14); border-radius: 2px; }}
@@ -464,7 +464,7 @@ class GlyphPicker(QDialog):
             b.setFixedSize(40, 40)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             sel = code.upper() == (current or "").upper()
-            b.setStyleSheet("QToolButton { font-family: 'Segoe Fluent Icons'; font-size: 18px; border: none;"
+            b.setStyleSheet("QToolButton { font-family: 'Segoe Fluent Icons', 'Rotary Icons'; font-size: 18px; border: none;"
                             f" border-radius: 8px; background: {'#0A84FF' if sel else 'rgba(255,255,255,0.05)'}; }}"
                             "QToolButton:hover { background: rgba(255,255,255,0.16); }")
             b.clicked.connect(lambda _=False, c=code: (self.picked.emit(c), self.accept()))

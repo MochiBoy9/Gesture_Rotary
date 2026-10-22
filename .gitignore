@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+# created when running from source (settings, logs and caches live next to the code)
+/config.json
+/config.*.bak
+/cache/
+/logs/
+# build output
+/build/
+/dist/
+/release/

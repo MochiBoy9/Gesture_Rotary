@@ -12,9 +12,10 @@ import os
 import socket
 import uuid
 
-from . import winapi
+from . import WIN, winapi
 
 log = logging.getLogger(__name__)
+OBS_PROCESS = "obs64.exe" if WIN else "obs"
 
 DEFAULTS = {"host": "localhost", "port": 4455, "password": ""}
 
@@ -142,7 +143,7 @@ def test_connection(host: str, port: int, password: str) -> str:
             v = c.call("GetVersion")
         return f"Connected to OBS {v.get('obsVersion', '')}"
     except ConnectionRefusedError:
-        if winapi.is_running("obs64.exe"):
+        if winapi.is_running(OBS_PROCESS):
             return "OBS is running but its WebSocket server is off (Tools → WebSocket Server Settings)"
         return "OBS isn't running"
     except OBSError as e:
@@ -167,7 +168,7 @@ def run(action: dict, cfg: dict | None, obs_exe: str = "") -> None:
     except ConnectionRefusedError:
         pass
     # Not reachable: start OBS with the right flag, or explain how to turn the server on.
-    if winapi.is_running("obs64.exe"):
+    if winapi.is_running(OBS_PROCESS):
         raise OBSError("Turn on OBS's WebSocket server: Tools → WebSocket Server Settings")
     flags = list(LAUNCH_FLAGS.get(request, []))
     if request == "SetCurrentProgramScene" and data.get("sceneName"):
@@ -179,4 +180,5 @@ def run(action: dict, cfg: dict | None, obs_exe: str = "") -> None:
     if not flags:
         raise OBSError("OBS isn't running")
     log.info("starting OBS with %s", flags)
-    os.startfile(obs_exe, "open", " ".join(f'"{f}"' if " " in f else f for f in flags), os.path.dirname(obs_exe))
+    from .actions import open_target
+    open_target(obs_exe, " ".join(f'"{f}"' if " " in f else f for f in flags), os.path.dirname(obs_exe))

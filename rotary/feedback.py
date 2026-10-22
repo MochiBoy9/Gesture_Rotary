@@ -1,8 +1,11 @@
-"""Sounds and speech through Windows itself (winsound + SAPI): no media framework to load or ship."""
+"""Sounds and speech through the system itself: no media framework to load or ship.
+Windows: winsound + SAPI. macOS: afplay + say. Linux: paplay / pw-play / aplay + spd-say / espeak."""
 from __future__ import annotations
 
 import ctypes
 import logging
+import shutil
+import subprocess
 import sys
 import tempfile
 import wave
@@ -63,13 +66,37 @@ class Sounds:
             self.files = {}
 
     def play(self, name: str) -> None:
-        if not (self.enabled and name in self.files and sys.platform == "win32"):
+        if not (self.enabled and name in self.files):
+            return
+        if sys.platform != "win32":
+            _play_posix(self.files[name])
             return
         import winsound
         try:
             winsound.PlaySound(self.files[name], winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
         except RuntimeError:
             pass
+
+
+_player: list[str] | None = None
+
+
+def _play_posix(path: str) -> None:
+    """Fire and forget: the sounds are a fraction of a second long."""
+    global _player
+    if _player is None:
+        if sys.platform == "darwin":
+            _player = ["afplay"]
+        else:
+            _player = next(([p] + extra for p, extra in (("paplay", []), ("pw-play", []), ("aplay", ["-q"]))
+                            if shutil.which(p)), [])
+    if not _player:
+        return
+    try:
+        subprocess.Popen(_player + [path], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, close_fds=True)
+    except OSError:
+        pass
 
 
 # --------------------------------------------------------------------------- speech (SAPI 5 over raw COM)
@@ -123,16 +150,55 @@ class Voice:
         self._fn(_SET_RATE, ctypes.c_long)(self._p, max(-10, min(10, int(r))))
 
 
+class CommandVoice:
+    """macOS `say`, or speech-dispatcher / eSpeak on Linux. A new phrase cuts off the one before it."""
+
+    def __init__(self):
+        if sys.platform == "darwin":
+            self.cmd = ["say", "-r", "220"]
+        elif shutil.which("spd-say"):
+            self.cmd = ["spd-say", "-C"]           # -C: cancel what's being said; spd-say queues by itself
+        else:
+            exe = shutil.which("espeak-ng") or shutil.which("espeak")
+            if not exe:
+                raise OSError("no speech synthesizer (install speech-dispatcher or espeak-ng)")
+            self.cmd = [exe, "-s", "190"]
+        self.proc: subprocess.Popen | None = None
+
+    def speak(self, text: str) -> None:
+        if self.cmd[0] == "spd-say":
+            subprocess.run(["spd-say", "-C"], capture_output=True, timeout=2)
+            args = ["spd-say", text]
+        else:
+            if self.proc is not None and self.proc.poll() is None:
+                self.proc.terminate()
+            args = self.cmd + ["--", text]
+        self.proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+
+    def set_rate(self, r: int) -> None:
+        pass
+
+
 class Speaker:
     """Speaks item names. The voice starts the first time something is said."""
 
     def __init__(self):
         self.enabled = False
-        self.voice: Voice | None = None
+        self.voice: Voice | CommandVoice | None = None
         self._failed = False
 
     def say(self, text: str) -> None:
-        if not self.enabled or not text or self._failed or sys.platform != "win32":
+        if not self.enabled or not text or self._failed:
+            return
+        if sys.platform != "win32":
+            try:
+                if self.voice is None:
+                    self.voice = CommandVoice()
+                self.voice.speak(text)
+            except (OSError, subprocess.SubprocessError) as e:
+                log.info("speech unavailable: %s", e)
+                self._failed = True
             return
         try:
             if self.voice is None:

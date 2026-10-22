@@ -1,6 +1,9 @@
 import json
 import os
+import sys
 import time
+
+import pytest
 
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QApplication
@@ -178,6 +181,7 @@ def test_discord_voice_socket_means_a_call(monkeypatch):
     assert live.discord_call() is None
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="reads Windows' UDP table")
 def test_udp_table_reads():
     import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

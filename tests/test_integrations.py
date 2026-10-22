@@ -172,7 +172,10 @@ def test_obs_auth_matches_protocol_spec():
     assert obs.auth_string(pw, salt, challenge) == expected
 
 
-def test_password_encryption_roundtrip():
+def test_password_encryption_roundtrip(monkeypatch):
+    if not winapi.WIN:     # keep the test away from the real Keychain / keyring
+        monkeypatch.setattr(winapi.posix, "MAC", False)
+        monkeypatch.setattr(winapi.posix.shutil, "which", lambda name: None)
     token = winapi.protect("hunter2 ✓")
     assert token and "hunter2" not in token
     assert winapi.unprotect(token) == "hunter2 ✓"

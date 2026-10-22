@@ -19,7 +19,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QStackedWidget,
                                QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
-from .. import DATA_DIR, __version__, apps, integrations, obs, system, winapi
+from .. import DATA_DIR, DEVICE, MAC, OS_NAME, WIN, __version__, apps, integrations, obs, system, winapi
+from ..actions import open_target
 from ..actions import ACTION_TYPES, CONFIG_PATH, MEDIA_PRESETS, Item, build_items
 from ..gestures import EngineSnapshot, GestureSettings, Phase
 from . import widgets
@@ -60,6 +61,24 @@ PRESETS = [
 ]
 HOTKEYS = [("ctrl+alt+space", "Ctrl + Alt + Space"), ("ctrl+shift+space", "Ctrl + Shift + Space"),
            ("ctrl+alt+r", "Ctrl + Alt + R"), ("win+alt+space", "Win + Alt + Space"), ("off", "Off")]
+if MAC:
+    HOTKEYS = [("ctrl+alt+space", "⌃⌥Space  (Control + Option + Space)"),
+               ("ctrl+shift+space", "⌃⇧Space  (Control + Shift + Space)"), ("ctrl+alt+r", "⌃⌥R  (Control + Option + R)"),
+               ("win+alt+space", "⌥⌘Space  (Option + Command + Space)"), ("off", "Off")]
+elif not WIN:
+    HOTKEYS[3] = ("win+alt+space", "Super + Alt + Space")
+if WIN:
+    KEY_PRESETS = [("win+d", "Show desktop"), ("win+tab", "Task view"), ("win+shift+s", "Snip screen"),
+                   ("ctrl+shift+esc", "Task Manager"), ("alt+tab", "Switch window"), ("win+e", "File Explorer"),
+                   ("win+a", "Quick settings"), ("win+v", "Clipboard history"), ("win+.", "Emoji panel"),
+                   ("win+g", "Xbox Game Bar")]
+elif MAC:
+    KEY_PRESETS = [("ctrl+up", "Mission Control"), ("cmd+space", "Spotlight"), ("cmd+shift+5", "Screenshot"),
+                   ("cmd+tab", "Switch app"), ("ctrl+cmd+q", "Lock screen"), ("ctrl+cmd+space", "Emoji & symbols"),
+                   ("cmd+alt+esc", "Force quit"), ("cmd+shift+a", "Applications folder")]
+else:
+    KEY_PRESETS = [("win", "Overview"), ("printscreen", "Screenshot"), ("alt+tab", "Switch window"),
+                   ("win+l", "Lock screen"), ("ctrl+alt+t", "Terminal")]
 
 
 def active_preset(g: dict) -> str | None:
@@ -658,10 +677,7 @@ class ActionEditor(QWidget):
         v.addLayout(h)
         self.preset = QComboBox()
         self.preset.addItem("Presets…", "")
-        for k, label in [*MEDIA_PRESETS.items(), ("win+d", "Show desktop"), ("win+tab", "Task view"),
-                         ("win+shift+s", "Snip screen"), ("ctrl+shift+esc", "Task Manager"),
-                         ("alt+tab", "Switch window"), ("win+e", "File Explorer"), ("win+a", "Quick settings"),
-                         ("win+v", "Clipboard history"), ("win+.", "Emoji panel"), ("win+g", "Xbox Game Bar")]:
+        for k, label in [*MEDIA_PRESETS.items(), *KEY_PRESETS]:
             self.preset.addItem(label, k)
         self.preset.activated.connect(self._preset)
         self.preset.setAccessibleName("Shortcut presets")
@@ -675,7 +691,7 @@ class ActionEditor(QWidget):
         self.wk_app.setAccessibleName("App")
         self.wk_app.setMinimumWidth(210)
         self.wk_proc = QLineEdit()
-        self.wk_proc.setPlaceholderText("or its program name, e.g. Discord.exe")
+        self.wk_proc.setPlaceholderText("or its program name, e.g. Discord.exe" if WIN else "or its name, e.g. Discord")
         self.wk_proc.setAccessibleName("Program name")
         h.addWidget(self.wk_app)
         h.addWidget(self.wk_proc, 1)
@@ -726,7 +742,9 @@ class ActionEditor(QWidget):
         # shell
         w, v = page()
         self.command = QLineEdit()
-        self.command.setPlaceholderText("cmd.exe command, e.g. shutdown /h")
+        self.command.setPlaceholderText("cmd.exe command, e.g. shutdown /h" if WIN else
+                                        "shell command, e.g. pmset sleepnow" if MAC else
+                                        "shell command, e.g. systemctl suspend")
         self.command.setAccessibleName("Command")
         v.addWidget(self.command)
         h = QHBoxLayout()
@@ -741,7 +759,8 @@ class ActionEditor(QWidget):
 
         # powershell / python
         w, v = page()
-        self.ps = _code_editor("# PowerShell\nStart-Process notepad")
+        self.ps = _code_editor("# PowerShell\nStart-Process notepad" if WIN else
+                               "# PowerShell (pwsh must be installed)\nGet-Date")
         self.ps.setAccessibleName("PowerShell script")
         v.addWidget(self.ps)
         self._add_page("powershell", w)
@@ -898,8 +917,13 @@ class ActionEditor(QWidget):
         self.preset.setCurrentIndex(0)
 
     def _browse_app(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Choose an app", os.environ.get("ProgramFiles", "C:\\"),
-                                              "Programs (*.exe *.lnk *.bat *.cmd *.appref-ms);;All files (*)")
+        if WIN:
+            start, kinds = os.environ.get("ProgramFiles", "C:\\"), "Programs (*.exe *.lnk *.bat *.cmd *.appref-ms)"
+        elif MAC:
+            start, kinds = "/Applications", "Apps (*.app)"
+        else:
+            start, kinds = "/usr/share/applications", "Apps (*.desktop);;Programs (*)"
+        path, _ = QFileDialog.getOpenFileName(self, "Choose an app", start, f"{kinds};;All files (*)")
         if path:
             path = os.path.normpath(path)
             self.app_target.setText(path)
@@ -1004,7 +1028,7 @@ class RotaryPage(QWidget):
         self.icon_mode.setAccessibleName("Icon style")
         self.glyph_btn = QPushButton()
         self.glyph_btn.setFixedSize(46, 34)
-        self.glyph_btn.setStyleSheet("font-family: 'Segoe Fluent Icons'; font-size: 16px;")
+        self.glyph_btn.setStyleSheet("font-family: 'Segoe Fluent Icons', 'Rotary Icons'; font-size: 16px;")
         self.glyph_btn.setAccessibleName("Choose symbol")
         self.glyph_btn.clicked.connect(self._pick_glyph)
         self.icon_btn = QPushButton("Choose…")
@@ -1185,7 +1209,9 @@ class RotaryPage(QWidget):
         if d is None:
             return
         path, _ = QFileDialog.getOpenFileName(self, "Choose an icon (app, shortcut or image)", "",
-                                              "Apps and images (*.exe *.lnk *.ico *.png *.jpg *.svg);;All files (*)")
+                                              ("Apps and images (*.exe *.lnk *.ico *.png *.jpg *.svg)" if WIN else
+                                               "Apps and images (*.app *.desktop *.icns *.png *.jpg *.svg)")
+                                              + ";;All files (*)")
         if path:
             d["icon"] = apps.shortcut_target(os.path.normpath(path))
         elif not d.get("icon"):
@@ -1318,7 +1344,7 @@ class AppsPage(QWidget):
         self._status_labels = {}
         self._switches = {}
         head = QHBoxLayout()
-        head.addWidget(page_header("Apps", "Apps on this PC that Gesture Rotary works with. Turn on Quick nav to put "
+        head.addWidget(page_header("Apps", f"Apps on this {DEVICE} that Gesture Rotary works with. Turn on Quick nav to put "
                                            "an app on the rotary — choosing it opens a ring of that app's own "
                                            "actions."), 1)
         refresh = QPushButton("Rescan")
@@ -1340,7 +1366,8 @@ class AppsPage(QWidget):
             self.v.addWidget(card)
         if "obs" in installed:
             self.v.addWidget(self._obs_card())
-        foot = QLabel("Don't see an app? Rotary → + → Any installed app works with everything in your Start menu.")
+        foot = QLabel("Don't see an app? Rotary → + → Any installed app works with everything in your "
+                      + ("Start menu." if WIN else "Applications folder." if MAC else "apps menu."))
         foot.setObjectName("muted")
         foot.setWordWrap(True)
         self.v.addWidget(foot)
@@ -1383,7 +1410,9 @@ class AppsPage(QWidget):
         card = Card("OBS Studio connection",
                     "Optional. Without it, OBS items start OBS already recording or streaming. To control OBS "
                     "while it's open: in OBS choose Tools → WebSocket Server Settings, tick Enable, and copy the "
-                    "password here. The password is encrypted for your Windows account.")
+                    "password here. " + ("The password is encrypted for your Windows account." if WIN else
+                                         "The password is kept in your macOS Keychain." if MAC else
+                                         "The password is kept in your keyring when one is available."))
         self.obs_host = QLineEdit(str(o.get("host", "localhost")))
         self.obs_host.setFixedWidth(200)
         card.add(Row("Server", None, self.obs_host))
@@ -1417,7 +1446,7 @@ class AppsPage(QWidget):
         except ValueError:
             o["port"] = 4455
         if self.obs_pw.text():
-            o["password_dpapi"] = winapi.protect(self.obs_pw.text())
+            o["password_dpapi"] = winapi.protect(self.obs_pw.text(), "obs-websocket")
             self.obs_pw.clear()
             self.obs_pw.setPlaceholderText("saved")
         self.app.apply_config()
@@ -1773,7 +1802,7 @@ class NotchPage(QWidget):
         v = QVBoxLayout(inner)
         v.setContentsMargins(28, 24, 36, 32)
         v.setSpacing(22)
-        v.addWidget(page_header("Notch", "A small notch at the top of your screen: a Dynamic Island for Windows, and the way "
+        v.addWidget(page_header("Notch", f"A small notch at the top of your screen: a Dynamic Island for {OS_NAME}, and the way "
                                          "into the rotary with your mouse and keyboard — no camera needed."))
         gen = self.app.cfg.get("general", {})
 
@@ -1805,7 +1834,9 @@ class NotchPage(QWidget):
         c.add(Row("24-hour time", None, self.h24))
         self.media = Switch(bool(isl["media"]))
         c.add(Row("Now playing", "YouTube and other sites, Spotify, Apple Music — anything Windows' media "
-                                 "controls know. Hover for ⏮ ⏯ ⏭.", self.media))
+                                 "controls know. Hover for ⏮ ⏯ ⏭." if WIN else
+                                 "Spotify, browsers, VLC — any MPRIS player (needs playerctl). Hover for ⏮ ⏯ ⏭."
+                                 if not MAC else "Not available on macOS yet.", self.media))
         self.art = Switch(bool(isl["media_art"]))
         c.add(Row("Album art", None, self.art))
         found = [who for who, _p, _d in clip_folders()]
@@ -2030,13 +2061,17 @@ class GeneralPage(QWidget):
         c = Card("Startup")
         self.login = Switch(system.run_at_login())
         self.login.toggled.connect(self._login)
-        c.add(Row("Start with Windows", None, self.login))
+        c.add(Row(f"Start with {OS_NAME}" if not MAC else "Open at login", None, self.login))
         self.minimized = Switch(gen.get("start_minimized", True))
         self.minimized.toggled.connect(lambda on: self.set("general", "start_minimized", on))
-        c.add(Row("Start minimised", "Open quietly on the taskbar", self.minimized))
+        c.add(Row("Start minimised", "Open quietly on the taskbar" if WIN else "Open quietly in the background",
+                  self.minimized))
         self.taskbar = Switch(gen.get("keep_in_taskbar", True))
         self.taskbar.toggled.connect(lambda on: self.set("general", "keep_in_taskbar", on))
-        c.add(Row("Keep on the taskbar when closed", "Otherwise closing hides it to the system tray", self.taskbar))
+        c.add(Row("Keep on the taskbar when closed" if WIN else "Keep in the Dock when closed" if MAC else
+                  "Keep in the taskbar when closed",
+                  "Otherwise closing hides it to the system tray" if not MAC else "Otherwise closing hides it to "
+                  "the menu bar", self.taskbar))
         v.addWidget(c)
 
         c = Card("Appearance")
@@ -2062,10 +2097,10 @@ class GeneralPage(QWidget):
 
         c = Card("Advanced")
         b1 = QPushButton("Open config.json")
-        b1.clicked.connect(lambda: os.startfile(str(CONFIG_PATH)) if CONFIG_PATH.exists() else None)
+        b1.clicked.connect(lambda: open_target(str(CONFIG_PATH)) if CONFIG_PATH.exists() else None)
         c.add(Row("Edit the raw settings file", None, b1))
         b2 = QPushButton("Open logs")
-        b2.clicked.connect(lambda: os.startfile(str(DATA_DIR / "logs")))
+        b2.clicked.connect(lambda: open_target(str(DATA_DIR / "logs")))
         c.add(Row("Diagnostics", None, b2))
         q = QPushButton("Quit Gesture Rotary")
         q.setObjectName("danger")
@@ -2075,7 +2110,7 @@ class GeneralPage(QWidget):
             u = QPushButton("Uninstall…")
             u.setObjectName("danger")
             u.clicked.connect(self._uninstall)
-            c.add(Row("Remove Gesture Rotary from this PC", None, u))
+            c.add(Row(f"Remove Gesture Rotary from this {DEVICE}", None, u))
         v.addWidget(c)
         v.addStretch(1)
         lay = QVBoxLayout(self)
@@ -2090,14 +2125,14 @@ class GeneralPage(QWidget):
         try:
             system.set_run_at_login(on)
         except OSError as e:
-            QMessageBox.warning(self, "Start with Windows", f"Couldn't change the startup setting:\n{e}")
+            QMessageBox.warning(self, "Start at login", f"Couldn't change the startup setting:\n{e}")
             self.login.set_silent(system.run_at_login())
 
     def _uninstall(self) -> None:
         box = QMessageBox(self)
         box.setWindowTitle("Uninstall Gesture Rotary")
-        box.setText("Remove Gesture Rotary from this PC?")
-        box.setInformativeText("This removes the app, its shortcuts and its start-with-Windows entry.")
+        box.setText(f"Remove Gesture Rotary from this {DEVICE}?")
+        box.setInformativeText("This removes the app, its shortcuts and its start-at-login entry.")
         keep = QCheckBox("Also delete my settings")
         box.setCheckBox(keep)
         box.setStandardButtons(QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes)
@@ -2175,7 +2210,8 @@ class WelcomePage(QWidget):
 
         c = Card("4 · Try it", "Raise your hand toward the camera. Close it into a fist, or hold your palm still, "
                                "and the rotary appears. No camera? Click the notch at the top of the screen, or "
-                               "press Ctrl + Alt + Space — then scroll to turn it and click to open.")
+                               f"press {'⌃⌥Space' if MAC else 'Ctrl + Alt + Space'} — then scroll to turn it and "
+                               "click to open.")
         tw = QWidget()
         th = QHBoxLayout(tw)
         th.setContentsMargins(14, 10, 14, 10)

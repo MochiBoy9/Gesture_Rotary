@@ -1,7 +1,8 @@
-"""Rotary items: configuration, and running actions on Windows.
+"""Rotary items: configuration, and running actions on Windows, macOS and Linux.
 
 Action types (config.json → "action": {...}):
   app          {"target": "C:\\…\\App.exe" | ".lnk" | "shell:AppsFolder\\<AppID>", "args": "", "process": "App.exe"}
+               (macOS: "/Applications/App.app"; Linux: a program or a .desktop file)
                switches to the app when it's already open (unless it has arguments)
   quicknav     {"app": "steam"}                      opens a second ring with that app's actions
   browser      {"url": "https://…"}                  default browser (URL optional)
@@ -10,8 +11,8 @@ Action types (config.json → "action": {...}):
   window_keys  {"process": "Discord.exe", "keys": "ctrl+shift+m", "restore": true}
                switch to an app, press its shortcut, switch back
   obs          {"request": "ToggleRecord", "data": {}}   OBS Studio (see obs.py)
-  shell        {"command": "…", "hidden": true}      cmd.exe
-  powershell   {"script": "…"}
+  shell        {"command": "…", "hidden": true}      cmd.exe (macOS / Linux: sh)
+  powershell   {"script": "…"}                       Windows PowerShell (macOS / Linux: pwsh, if installed)
   python       {"code": "…"}                         runs in its own process
 """
 from __future__ import annotations
@@ -30,7 +31,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import DATA_DIR, FROZEN, apps, winapi
+from . import DATA_DIR, FROZEN, MAC, WIN, apps, winapi
 from .winapi import parse_keys, press_keys  # noqa: F401  (re-exported for callers)
 
 log = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ ACTION_TYPES = {
     "python": "Run Python code",
 }
 
-DEFAULT_ITEMS = [
+WINDOWS_ITEMS = [
     {"name": "Browser", "subtitle": "Open your browser", "glyph": "E774", "tint": "#0A84FF",
      "action": {"type": "browser"}},
     {"name": "Files", "subtitle": "File Explorer", "glyph": "E8B7", "tint": "#32ADE6",
@@ -69,6 +70,46 @@ DEFAULT_ITEMS = [
     {"name": "Desktop", "subtitle": "Show desktop", "glyph": "E7F4", "tint": "#5E5CE6",
      "action": {"type": "keys", "keys": ["win", "d"]}},
 ]
+
+MAC_ITEMS = [
+    {"name": "Browser", "subtitle": "Open your browser", "glyph": "E774", "tint": "#0A84FF",
+     "action": {"type": "browser"}},
+    {"name": "Finder", "subtitle": "Your files", "glyph": "E8B7", "tint": "#32ADE6",
+     "action": {"type": "app", "target": "/System/Library/CoreServices/Finder.app"}},
+    {"name": "Terminal", "subtitle": "Command line", "glyph": "E756", "tint": "#30D158",
+     "action": {"type": "app", "target": "/System/Applications/Utilities/Terminal.app"}},
+    {"name": "Settings", "subtitle": "System Settings", "glyph": "E713", "tint": "#8E8E93",
+     "action": {"type": "open", "target": "x-apple.systempreferences:"}},
+    {"name": "Play / Pause", "subtitle": "Media", "glyph": "E768", "tint": "#FF375F",
+     "action": {"type": "keys", "keys": ["media_play_pause"]}},
+    {"name": "Next Track", "subtitle": "Media", "glyph": "E893", "tint": "#BF5AF2",
+     "action": {"type": "keys", "keys": ["media_next"]}},
+    {"name": "Screenshot", "subtitle": "Capture the screen", "glyph": "E722", "tint": "#FF9F0A",
+     "action": {"type": "keys", "keys": "cmd+shift+5"}},
+    {"name": "Mission Control", "subtitle": "All your windows", "glyph": "E7F4", "tint": "#5E5CE6",
+     "action": {"type": "keys", "keys": "ctrl+up"}},
+]
+
+LINUX_ITEMS = [
+    {"name": "Browser", "subtitle": "Open your browser", "glyph": "E774", "tint": "#0A84FF",
+     "action": {"type": "browser"}},
+    {"name": "Files", "subtitle": "Your home folder", "glyph": "E8B7", "tint": "#32ADE6",
+     "action": {"type": "open", "target": "~"}},
+    {"name": "Terminal", "subtitle": "Command line", "glyph": "E756", "tint": "#30D158",
+     "action": {"type": "app", "target": "x-terminal-emulator", "fallback": "gnome-terminal"}},
+    {"name": "Settings", "subtitle": "System settings", "glyph": "E713", "tint": "#8E8E93",
+     "action": {"type": "app", "target": "gnome-control-center", "fallback": "systemsettings"}},
+    {"name": "Play / Pause", "subtitle": "Media", "glyph": "E768", "tint": "#FF375F",
+     "action": {"type": "keys", "keys": ["media_play_pause"]}},
+    {"name": "Next Track", "subtitle": "Media", "glyph": "E893", "tint": "#BF5AF2",
+     "action": {"type": "keys", "keys": ["media_next"]}},
+    {"name": "Screenshot", "subtitle": "Capture the screen", "glyph": "E722", "tint": "#FF9F0A",
+     "action": {"type": "keys", "keys": "printscreen"}},
+    {"name": "Overview", "subtitle": "All your windows", "glyph": "E7F4", "tint": "#5E5CE6",
+     "action": {"type": "keys", "keys": "win"}},
+]
+
+DEFAULT_ITEMS = WINDOWS_ITEMS if WIN else MAC_ITEMS if MAC else LINUX_ITEMS
 
 DEFAULT_CONFIG = {
     "version": CONFIG_VERSION,
@@ -104,7 +145,7 @@ DEFAULT_CONFIG = {
     },
     "island": {                  # what the notch shows, Dynamic-Island style
         "clock": "time",         # off | time | date
-        "clock_24h": None,       # None = follow Windows
+        "clock_24h": None,       # None = follow the system
         "media": True,           # now playing (YouTube, Spotify, Apple Music, …)
         "media_art": True,
         "clips": True,           # Medal recording; clips saved by Medal / Game Bar / NVIDIA / OBS
@@ -239,6 +280,8 @@ def build_items(cfg: dict) -> list[Item]:
 
 # --------------------------------------------------------------------------- helpers
 def default_browser() -> str | None:
+    if not WIN:
+        return None              # macOS / Linux: opening the link picks the default browser
     try:
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
@@ -253,7 +296,7 @@ def default_browser() -> str | None:
 
 
 def _resolve(target: str) -> str | None:
-    target = os.path.expandvars((target or "").strip().strip('"'))
+    target = os.path.expanduser(os.path.expandvars((target or "").strip().strip('"')))
     if not target:
         return None
     if os.path.exists(target):
@@ -263,6 +306,18 @@ def _resolve(target: str) -> str | None:
 
 # Shell processes own windows that aren't "the app" (the desktop is explorer.exe), so never switch to those.
 NO_FOCUS = {"explorer.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "rundll32.exe", "mmc.exe", "conhost.exe"}
+
+
+def open_target(target: str, args: str = "", cwd: str | None = None) -> None:
+    """Open a program, file, folder or link with the system (os.startfile on Windows)."""
+    if WIN:
+        if args or cwd:
+            os.startfile(target, "open", args, cwd)
+        else:
+            os.startfile(target)
+        return
+    from . import posix
+    posix.open_target(target, args, cwd)
 
 
 def _launch_app(action: dict) -> None:
@@ -275,21 +330,18 @@ def _launch_app(action: dict) -> None:
         cand = action.get("exe") or target
         if cand.lower().endswith(".exe"):
             proc = os.path.basename(cand)
-    if action.get("focus", not args) and proc and proc.lower() not in NO_FOCUS:
+    if WIN and action.get("focus", not args) and proc and proc.lower() not in NO_FOCUS:
         if winapi.focus_app(proc):
             return
     low = target.lower()
     if low.startswith("shell:") or "://" in target or low.startswith(("http:", "https:", "mailto:")):
-        os.startfile(target)
+        open_target(target)
         return
     exe = _resolve(target) or _resolve(action.get("fallback", ""))
     if not exe:
         raise FileNotFoundError(target)
     cwd = os.path.dirname(exe) if exe.lower().endswith(".exe") else None   # e.g. OBS needs its own folder
-    if args or cwd:
-        os.startfile(exe, "open", args, cwd)
-    else:
-        os.startfile(exe)
+    open_target(exe, args, cwd)       # macOS / Linux: opening a running app switches to it
 
 
 SCRIPTS = DATA_DIR / "cache" / "scripts"
@@ -303,14 +355,18 @@ def python_command(code: str, cfg: dict | None) -> tuple[list[str], Path | None]
     f.write_text(code, encoding="utf-8")
     pref = ((cfg or {}).get("general") or {}).get("python", "auto")
     if pref in ("auto", "system"):
-        sys_py = apps.which_cli("py", allow_store_alias=False) or apps.which_cli("python", allow_store_alias=False)
+        if WIN:
+            sys_py = apps.which_cli("py", allow_store_alias=False) or apps.which_cli("python", allow_store_alias=False)
+        else:
+            from . import posix
+            sys_py = posix.platform_python()
         if sys_py:
             return ([sys_py, "-3", str(f)] if sys_py.lower().endswith("py.exe") else [sys_py, str(f)]), None
     err = f.with_suffix(".err")
     if FROZEN:
         return [sys.executable, "--run-python", str(f), "--error-file", str(err)], err
     py = Path(sys.executable)
-    py = py.with_name("python.exe") if py.with_name("python.exe").exists() else py
+    py = py.with_name("python.exe") if py.with_name("python.exe").exists() else py   # not pythonw.exe
     return [str(py), str(f)], None
 
 
@@ -357,28 +413,39 @@ def execute(action: dict, cfg: dict | None = None) -> None:
         if exe:
             subprocess.Popen([exe] + ([url] if url else []), close_fds=True)
         else:
-            os.startfile(url or "https://www.google.com")
+            open_target(url or "https://www.google.com")
     elif kind == "app":
         _launch_app(action)
     elif kind == "open":
-        os.startfile(os.path.expandvars(action["target"]))
+        open_target(os.path.expanduser(os.path.expandvars(action["target"])))
     elif kind == "window_keys":
         winapi.send_keys_to(action.get("process", ""), action.get("keys", ""), bool(action.get("restore", True)),
-                            action.get("title", ""), action.get("label", ""))
+                            action.get("title", ""), action.get("label", ""), action.get("bundle", ""))
     elif kind == "obs":
         from . import integrations, obs
         a = integrations.get("obs")
         obs.run(action, cfg, a.exe if a else "")
     elif kind == "shell":
         cmd = action.get("command", "")
-        if action.get("hidden", True):
+        if not WIN:
+            from . import posix
+            if action.get("hidden", True):
+                _run_checked([os.environ.get("SHELL") or "/bin/sh", "-c", cmd], "Command")
+            else:
+                subprocess.Popen(posix.terminal_command(cmd), start_new_session=True)
+        elif action.get("hidden", True):
             _run_checked(["cmd.exe", "/c", cmd], "Command")
         else:
             subprocess.Popen(["cmd.exe", "/k", cmd], creationflags=subprocess.CREATE_NEW_CONSOLE)
     elif kind == "powershell":
         enc = base64.b64encode(action.get("script", "").encode("utf-16-le")).decode("ascii")
-        _run_checked(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-                      "-EncodedCommand", enc], "PowerShell")
+        if WIN:
+            _run_checked(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+                          "-EncodedCommand", enc], "PowerShell")
+        elif shutil.which("pwsh"):
+            _run_checked(["pwsh", "-NoProfile", "-NonInteractive", "-EncodedCommand", enc], "PowerShell")
+        else:
+            raise FileNotFoundError("PowerShell (pwsh) isn't installed")
     elif kind == "python":
         args, err = python_command(action.get("code", ""), cfg)
         _run_checked(args, "Python", err_file=err)

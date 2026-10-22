@@ -5,13 +5,29 @@ import time
 from pathlib import Path
 
 T0 = time.perf_counter()          # for the "ready in … ms" line in the log
-__version__ = "1.3.0"
+__version__ = "1.4.0"
+
+WIN = sys.platform == "win32"
+MAC = sys.platform == "darwin"
+LINUX = sys.platform.startswith("linux")
+OS_NAME = "Windows" if WIN else "macOS" if MAC else "Linux"
+DEVICE = "PC" if WIN else "Mac" if MAC else "computer"      # "Remove Gesture Rotary from this PC"
+
+
+def _user_data_dir() -> Path:
+    """Where settings live for the packaged app: %APPDATA%, ~/Library/Application Support or ~/.config."""
+    if WIN:
+        return Path(os.environ.get("APPDATA", Path.home())) / "GestureRotary"
+    if MAC:
+        return Path.home() / "Library" / "Application Support" / "GestureRotary"
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "GestureRotary"
+
 
 FROZEN = bool(getattr(sys, "frozen", False))
 if FROZEN:
-    # Packaged .exe: bundled resources next to the exe, user data in %APPDATA%.
+    # Packaged app: bundled resources next to the executable (or in the .app), user data per user.
     ROOT = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-    DATA_DIR = Path(os.environ.get("APPDATA", Path.home())) / "GestureRotary"
+    DATA_DIR = _user_data_dir()
 else:
     ROOT = Path(__file__).resolve().parent.parent
     DATA_DIR = ROOT

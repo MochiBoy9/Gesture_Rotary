@@ -1,7 +1,7 @@
 """Win32 helpers: keyboard input, finding and focusing app windows, process checks, DPAPI.
 
-Everything degrades to a no-op / empty result off Windows so the pure-Python parts
-of the app (and its tests) still import anywhere."""
+On macOS and Linux the same functions hand over to posix.py, so callers don't need to care
+which system they're on."""
 from __future__ import annotations
 
 import base64
@@ -64,8 +64,12 @@ def vk_code(name: str) -> int:
 
 
 def press_keys(keys) -> None:
-    codes = [vk_code(k) for k in parse_keys(keys)]
-    if not WIN or not codes:
+    names = parse_keys(keys)
+    codes = [vk_code(k) for k in names]
+    if not WIN:
+        posix.press_keys(names)
+        return
+    if not codes:
         return
     for c in codes:
         user32.keybd_event(c, 0, 0x1 if c in _EXTENDED else 0, 0)
@@ -76,7 +80,9 @@ def press_keys(keys) -> None:
 
 
 # --------------------------------------------------------------------------- Win32 bindings
-if WIN:
+if not WIN:
+    from . import posix
+else:
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
@@ -136,9 +142,9 @@ WS_EX_TOOLWINDOW = 0x80
 
 # --------------------------------------------------------------------------- processes & windows
 def running_processes() -> set[str]:
-    """Lower-case exe names of every running process."""
+    """Lower-case exe names of every running process (without .exe on macOS / Linux)."""
     if not WIN:
-        return set()
+        return posix.running_processes()
     snap = kernel32.CreateToolhelp32Snapshot(0x2, 0)
     if not snap or snap == wintypes.HANDLE(-1).value:
         return set()
@@ -158,7 +164,7 @@ def running_processes() -> set[str]:
 def processes() -> dict[int, str]:
     """pid → lower-case exe name for every running process."""
     if not WIN:
-        return {}
+        return posix.processes()
     snap = kernel32.CreateToolhelp32Snapshot(0x2, 0)
     if not snap or snap == wintypes.HANDLE(-1).value:
         return {}
@@ -178,7 +184,7 @@ def processes() -> dict[int, str]:
 def command_line(pid: int) -> str:
     """A process's command line ('' if it can't be read). Same-user processes only."""
     if not WIN:
-        return ""
+        return posix.command_line(pid)
     h = kernel32.OpenProcess(0x1000, False, pid)        # PROCESS_QUERY_LIMITED_INFORMATION
     if not h:
         return ""
@@ -200,6 +206,8 @@ def command_line(pid: int) -> str:
 
 
 def is_running(exe_name: str) -> bool:
+    if not WIN:
+        return posix.is_running(exe_name)
     return bool(exe_name) and exe_name.lower() in running_processes()
 
 
@@ -297,14 +305,20 @@ def focus_window(hwnd: int) -> bool:
     return int(user32.GetForegroundWindow() or 0) == hwnd
 
 
-def focus_app(exe_name: str, prefer_title: str = "") -> bool:
+def focus_app(exe_name: str, prefer_title: str = "", bundle: str = "") -> bool:
+    if not WIN:
+        return posix.focus_app(exe_name, bundle)
     for hwnd in windows_of(exe_name, prefer_title)[:1]:
         return focus_window(hwnd)
     return False
 
 
-def send_keys_to(exe_name: str, keys, restore: bool = True, prefer_title: str = "", label: str = "") -> None:
+def send_keys_to(exe_name: str, keys, restore: bool = True, prefer_title: str = "", label: str = "",
+                 bundle: str = "") -> None:
     """Switch to an app's window, press a shortcut there, then (optionally) switch back."""
+    if not WIN:
+        posix.send_keys_to(exe_name, keys, restore, label, bundle)
+        return
     wins = windows_of(exe_name, prefer_title, include_hidden=True)
     if not wins:
         raise RuntimeError(f"{label or exe_name} isn't running")
@@ -323,11 +337,13 @@ def send_keys_to(exe_name: str, keys, restore: bool = True, prefer_title: str = 
 
 
 # --------------------------------------------------------------------------- DPAPI (per-user encryption)
-def protect(text: str) -> str:
+def protect(text: str, account: str = "password") -> str:
+    """Encrypt a secret for this user. On macOS it goes to the Keychain (and Linux's Secret Service when
+    there is one) under `account`; the returned token is what the config file keeps."""
     if not text:
         return ""
     if not WIN:
-        return base64.b64encode(text.encode("utf-8")).decode("ascii")
+        return posix.protect(text, account)
     data = text.encode("utf-8")
     buf = ctypes.create_string_buffer(data, len(data))
     inp = DATA_BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
@@ -344,9 +360,9 @@ def protect(text: str) -> str:
 def unprotect(token: str) -> str:
     if not token:
         return ""
-    raw = base64.b64decode(token)
     if not WIN:
-        return raw.decode("utf-8")
+        return posix.unprotect(token)
+    raw = base64.b64decode(token)
     buf = ctypes.create_string_buffer(raw, len(raw))
     inp = DATA_BLOB(len(raw), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
     out = DATA_BLOB()
