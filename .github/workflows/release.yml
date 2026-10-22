@@ -1,8 +1,11 @@
 name: Release
 
-# Push a tag like v1.4.0 (matching rotary/__init__.py's __version__) to build the installers for
-# Windows, macOS and Linux and publish them as a GitHub Release. "Run workflow", and pull requests that
-# touch the packaging, build them without publishing (download them from the run's artifacts).
+# Two ways to publish a GitHub Release with the installers for Windows, macOS and Linux:
+#   - push a tag like v1.4.0 (matching rotary/__init__.py's __version__), or
+#   - Actions → Release → Run workflow, with the tag typed in (it's created on the chosen branch if it
+#     doesn't exist yet).
+# "Run workflow" with no tag, and pull requests that touch the packaging, only build them (download
+# them from the run's artifacts).
 on:
   push:
     tags: ["v*"]
@@ -16,9 +19,18 @@ on:
       - "pyproject.toml"
       - "uv.lock"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Publish as this release, e.g. v1.4.0 (empty = only build)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
+
+env:
+  # The release being made: the pushed tag, or the one typed into "Run workflow" ('' = none).
+  RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.tag || '' }}
 
 jobs:
   build:
@@ -52,13 +64,13 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: The tag matches the app's version
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.RELEASE_TAG != ''
         shell: bash
         run: |
           version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' rotary/__init__.py)
-          tag="${GITHUB_REF_NAME#v}"
-          if [ "${tag%%-*}" != "$version" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME doesn't match __version__ $version in rotary/__init__.py"
+          tag="${RELEASE_TAG#v}"
+          if [ "${RELEASE_TAG:0:1}" != "v" ] || [ "${tag%%-*}" != "$version" ]; then
+            echo "::error::Tag $RELEASE_TAG doesn't match __version__ $version in rotary/__init__.py (expected v$version)"
             exit 1
           fi
 
@@ -107,7 +119,7 @@ jobs:
   publish:
     name: Publish the release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: needs.build.result == 'success' && (startsWith(github.ref, 'refs/tags/v') || inputs.tag != '')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -123,15 +135,17 @@ jobs:
           cat SHA256SUMS.txt
       - name: Release notes
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           # This version's section of CHANGELOG.md, then the install guide.
           awk -v v="$version" '$0 ~ "^## \\[?"v"\\]?" {on=1; next} on && /^## / {exit} on' CHANGELOG.md > notes.md
           cat installer/RELEASE_NOTES.md >> notes.md
           cat notes.md
       - uses: softprops/action-gh-release@v2
         with:
-          name: Gesture Rotary ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: Gesture Rotary ${{ env.RELEASE_TAG }}
           body_path: notes.md
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
           files: release/*
           fail_on_unmatched_files: true
