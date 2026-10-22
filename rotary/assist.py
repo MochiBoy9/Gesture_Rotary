@@ -1,0 +1,337 @@
+"""Screen assist: an AI looks at the screen, finds the question or problem on it and answers on the notch.
+
+It works with free AI services: Google Gemini (a free API key from Google AI Studio), Groq and OpenRouter
+(free tiers), and Ollama (free and private, it runs on this computer). ChatGPT and any other
+OpenAI-compatible server work too. The screenshot goes only to the service you chose, and only when you ask.
+
+The answer comes back as JSON: whether there's a question at all, the option to pick for multiple choice
+("B"), a short answer for the notch and a sentence of explanation for its hover card.
+"""
+from __future__ import annotations
+
+import base64
+import json
+import logging
+import re
+import ssl
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+
+from . import MAC, winapi
+
+log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Provider:
+    id: str
+    name: str
+    style: str          # gemini | openai | ollama: which API it speaks
+    url: str            # the API's base address
+    model: str          # a free model that can see images
+    key_url: str        # where to get a key ('' = none needed)
+    note: str
+
+
+PROVIDERS = [
+    Provider("gemini", "Google Gemini", "gemini", "https://generativelanguage.googleapis.com/v1beta",
+             "gemini-flash-latest", "https://aistudio.google.com/apikey",
+             "Free. Get a key from Google AI Studio with your Google account; no card needed."),
+    Provider("groq", "Groq", "openai", "https://api.groq.com/openai/v1",
+             "meta-llama/llama-4-scout-17b-16e-instruct", "https://console.groq.com/keys",
+             "Free and very fast. Get a key from the Groq console."),
+    Provider("openrouter", "OpenRouter", "openai", "https://openrouter.ai/api/v1",
+             "google/gemma-3-27b-it:free", "https://openrouter.ai/keys",
+             "Free models end in :free. Get a key from OpenRouter."),
+    Provider("ollama", "Ollama (on this computer)", "ollama", "http://localhost:11434", "gemma3",
+             "", "Free and private: nothing leaves this computer. Install Ollama from ollama.com, then run "
+                 "\"ollama pull gemma3\" (or another model that can see images, like qwen2.5vl)."),
+    Provider("openai", "ChatGPT / OpenAI-compatible", "openai", "https://api.openai.com/v1", "gpt-4o-mini",
+             "https://platform.openai.com/api-keys",
+             "OpenAI's API needs a paid key. Change the address to use LM Studio or any other "
+             "OpenAI-compatible server."),
+]
+BY_ID = {p.id: p for p in PROVIDERS}
+
+DEFAULTS = {"provider": "gemini", "models": {}, "urls": {}, "keys": {}, "seconds": 20,
+            "hotkey": "ctrl+alt+a" if MAC else "win+alt+a"}
+TIMEOUT = 90.0
+MAX_SIDE = 1600          # screenshots are scaled down to this: plenty to read text, quick to upload
+
+SYSTEM = """You look at a screenshot of someone's computer screen and help with the question or problem on it \
+right now: a quiz or homework question, a multiple-choice question, a maths or logic problem, a puzzle, an error \
+message, a bug in code, a form that needs filling in.
+
+Reply with one JSON object and nothing else:
+{"found": true, "choice": "", "answer": "", "detail": ""}
+
+- found: false when nothing on the screen asks a question or shows a problem to solve.
+- choice: for multiple choice, the label of the correct option exactly as it appears ("B", "3", "iv"); \
+several labels separated by commas when more than one is correct. Otherwise "".
+- answer: the answer itself, as short as possible (60 characters at most): "x = 4", "Paris", \
+"Add a closing bracket on line 12". For multiple choice, the text of the chosen option.
+- detail: one or two short sentences explaining why, or the next step (200 characters at most).
+
+If there are several questions, answer the one that is selected, highlighted or most prominent. Work the problem \
+out carefully before you answer."""
+
+ASK = "What is the question or problem on this screen, and what's the answer?"
+
+
+class AssistError(Exception):
+    """Something the notch can show as it is."""
+
+
+@dataclass
+class Answer:
+    found: bool
+    choice: str = ""
+    answer: str = ""
+    detail: str = ""
+
+    def headline(self) -> str:
+        """One line for the notch or the status pill: "B · Paris", or just the answer."""
+        if self.choice and self.answer:
+            return f"{self.choice} · {self.answer}"
+        return self.choice or self.answer
+
+    def spoken(self) -> str:
+        if self.choice:
+            return f"Answer {self.choice}. {self.answer}".strip()
+        return self.answer
+
+
+# --------------------------------------------------------------------------- settings
+def settings(cfg: dict | None) -> dict:
+    return {**DEFAULTS, **((cfg or {}).get("assist") or {})}
+
+
+def provider(cfg: dict | None) -> Provider:
+    return BY_ID.get(settings(cfg)["provider"], PROVIDERS[0])
+
+
+def model_for(cfg: dict | None, p: Provider) -> str:
+    return str(settings(cfg)["models"].get(p.id) or p.model).strip()
+
+
+def url_for(cfg: dict | None, p: Provider) -> str:
+    return str(settings(cfg)["urls"].get(p.id) or p.url).strip().rstrip("/")
+
+
+def key_for(cfg: dict | None, p: Provider) -> str:
+    token = settings(cfg)["keys"].get(p.id, "")
+    if not token:
+        return ""
+    try:
+        return winapi.unprotect(token)
+    except Exception:
+        log.info("couldn't read the saved %s key", p.name, exc_info=True)
+        return ""
+
+
+def save_key(cfg: dict, provider_id: str, key: str) -> None:
+    """Keep an API key the way the OBS password is kept: encrypted for this user (Windows), in the
+    Keychain (macOS) or the keyring (Linux, when there is one)."""
+    keys = cfg.setdefault("assist", {}).setdefault("keys", {})
+    key = key.strip()
+    if key:
+        keys[provider_id] = winapi.protect(key, f"assist-{provider_id}")
+    else:
+        keys.pop(provider_id, None)
+
+
+def ready(cfg: dict | None) -> str:
+    """'' when screen assist can run; otherwise what's missing, in words."""
+    p = provider(cfg)
+    if not p.key_url or key_for(cfg, p):
+        return ""
+    if p.id == "openai" and url_for(cfg, p) != p.url:
+        return ""                                   # LM Studio and other local servers need no key
+    return f"Add {'an' if p.id == 'openai' else 'a free'} {p.name} API key on the Screen assist page"
+
+
+# --------------------------------------------------------------------------- the request
+def build_request(p: Provider, model: str, base: str, key: str, image: bytes,
+                  mime: str = "image/jpeg") -> tuple[str, dict, dict]:
+    """(url, headers, JSON body) for one screenshot. No network here, so it can be tested."""
+    b64 = base64.b64encode(image).decode("ascii")
+    headers = {"Content-Type": "application/json", "User-Agent": "GestureRotary"}
+    if p.style == "gemini":
+        if key:
+            headers["x-goog-api-key"] = key
+        body = {"systemInstruction": {"parts": [{"text": SYSTEM}]},
+                "contents": [{"role": "user", "parts": [{"inline_data": {"mime_type": mime, "data": b64}},
+                                                        {"text": ASK}]}],
+                "generationConfig": {"responseMimeType": "application/json"}}
+        return f"{base}/models/{model}:generateContent", headers, body
+    if p.style == "ollama":
+        body = {"model": model, "stream": False, "format": "json",
+                "messages": [{"role": "system", "content": SYSTEM},
+                             {"role": "user", "content": ASK, "images": [b64]}]}
+        return f"{base}/api/chat", headers, body
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    if "openrouter.ai" in base:
+        headers["HTTP-Referer"] = "https://github.com/MochiBoy9/Gesture_Rotary"
+        headers["X-Title"] = "Gesture Rotary"
+    # No response_format: not every OpenAI-compatible server accepts it alongside an image. The prompt asks
+    # for JSON and parse_reply() copes with a little extra around it.
+    body = {"model": model,
+            "messages": [{"role": "system", "content": SYSTEM},
+                         {"role": "user", "content": [
+                             {"type": "text", "text": ASK},
+                             {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}]}]}
+    return f"{base}/chat/completions", headers, body
+
+
+def reply_text(style: str, data: dict) -> str:
+    """The model's words out of each API's response."""
+    if style == "gemini":
+        cands = data.get("candidates") or []
+        if not cands:
+            why = (data.get("promptFeedback") or {}).get("blockReason")
+            raise AssistError(f"Gemini didn't answer ({why})" if why else "Gemini didn't answer")
+        parts = (cands[0].get("content") or {}).get("parts") or []
+        return "".join(str(pt.get("text", "")) for pt in parts if not pt.get("thought"))
+    if style == "ollama":
+        return str((data.get("message") or {}).get("content", ""))
+    choices = data.get("choices") or []
+    if not choices:
+        raise AssistError("The AI didn't answer")
+    content = (choices[0].get("message") or {}).get("content", "")
+    if isinstance(content, list):                       # some servers return content parts
+        content = "".join(str(c.get("text", "")) for c in content if isinstance(c, dict))
+    return str(content or "")
+
+
+def _clean_choice(choice: str) -> str:
+    """'(b)' → 'B', 'Option C.' → 'C', 'a, c' → 'A, C'."""
+    parts = []
+    for part in re.split(r"[,/&]|\band\b", str(choice)):
+        part = re.sub(r"^\s*(option|answer|choice)\s*", "", part.strip(), flags=re.I).strip(" ().:[]-")
+        if not part:
+            continue
+        parts.append(part.upper() if len(part) == 1 else part)
+    return ", ".join(parts)[:16]
+
+
+def _short(text, limit: int) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def parse_reply(text: str) -> Answer:
+    """The model's reply → an Answer. Copes with code fences and words around the JSON; when there's no
+    JSON at all, the reply itself is the answer."""
+    text = (text or "").strip()
+    if not text:
+        raise AssistError("The AI sent an empty answer")
+    data = None
+    start, end = text.find("{"), text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            data = json.loads(text[start:end + 1])
+        except ValueError:
+            data = None
+    if not isinstance(data, dict):
+        lines = [ln.strip() for ln in text.strip("`").splitlines() if ln.strip()]
+        return Answer(True, "", _short(lines[0] if lines else text, 80), _short(" ".join(lines[1:]), 240))
+    found = data.get("found", True)
+    if isinstance(found, str):
+        found = found.strip().lower() not in ("false", "no", "0", "")
+    ans = Answer(bool(found), _clean_choice(data.get("choice") or ""), _short(data.get("answer"), 80),
+                 _short(data.get("detail"), 240))
+    if ans.found and not (ans.choice or ans.answer):
+        ans.found = False
+    return ans
+
+
+def _ssl_context() -> ssl.SSLContext:
+    try:
+        import certifi                       # comes with MediaPipe; the packaged Mac app has no system CA path
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
+def _error_message(raw: bytes) -> str:
+    try:
+        data = json.loads(raw.decode("utf-8", "replace"))
+    except ValueError:
+        return raw.decode("utf-8", "replace").strip()[:160]
+    if isinstance(data, list) and data:
+        data = data[0]
+    err = data.get("error") if isinstance(data, dict) else None
+    if isinstance(err, dict):
+        return str(err.get("message") or err.get("status") or "")[:160]
+    return str(err or "")[:160]
+
+
+def post(url: str, headers: dict, body: dict, p: Provider, model: str, timeout: float = TIMEOUT) -> dict:
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        msg = _error_message(e.read() or b"")
+        log.info("%s answered %s: %s", p.name, e.code, msg)
+        if e.code in (401, 403):
+            raise AssistError(f"{p.name} refused the API key") from None
+        if e.code == 429:
+            raise AssistError(f"{p.name}'s free limit is used up for now; try again in a minute") from None
+        if e.code == 404:
+            if p.style == "ollama":
+                raise AssistError(f"Ollama doesn't have {model} yet; run: ollama pull {model}") from None
+            raise AssistError(f"{p.name} doesn't know the model {model}") from None
+        raise AssistError(f"{p.name}: {msg or f'error {e.code}'}") from None
+    except urllib.error.URLError as e:
+        if p.style == "ollama":
+            raise AssistError("Ollama isn't running; install it from ollama.com and open it") from None
+        raise AssistError(f"Couldn't reach {p.name} ({getattr(e, 'reason', e)})") from None
+    except TimeoutError:
+        raise AssistError(f"{p.name} took too long to answer") from None
+    except ValueError:
+        raise AssistError(f"{p.name} sent something that isn't JSON") from None
+
+
+def solve(image: bytes, cfg: dict | None, mime: str = "image/jpeg") -> Answer:
+    """Send one screenshot and return the answer (blocking; run it off the UI thread)."""
+    missing = ready(cfg)
+    if missing:
+        raise AssistError(missing)
+    p = provider(cfg)
+    model = model_for(cfg, p)
+    url, headers, body = build_request(p, model, url_for(cfg, p), key_for(cfg, p), image, mime)
+    log.info("screen assist: asking %s (%s), %d KB", p.name, model, len(image) // 1024)
+    text = reply_text(p.style, post(url, headers, body, p, model))
+    ans = parse_reply(text)
+    log.info("screen assist: found=%s choice=%r answer=%r", ans.found, ans.choice, ans.answer)
+    return ans
+
+
+# --------------------------------------------------------------------------- the screenshot
+def capture(screen=None) -> bytes:
+    """The screen under the mouse as a JPEG (call on the UI thread). The notch and the rotary never show up
+    in it on Windows; on macOS it needs the Screen Recording permission (otherwise only the wallpaper)."""
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
+    from PySide6.QtGui import QCursor, QGuiApplication
+
+    screen = screen or QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+    if screen is None:
+        raise AssistError("No screen to look at")
+    pix = screen.grabWindow(0)
+    if pix.isNull() or pix.width() < 8:
+        raise AssistError("Couldn't capture the screen")
+    img = pix.toImage()
+    if max(img.width(), img.height()) > MAX_SIDE:
+        img = img.scaled(MAX_SIDE, MAX_SIDE, Qt.AspectRatioMode.KeepAspectRatio,
+                         Qt.TransformationMode.SmoothTransformation)
+    data = QByteArray()
+    buf = QBuffer(data)
+    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    img.save(buf, "JPEG", 85)
+    buf.close()
+    if data.isEmpty():
+        raise AssistError("Couldn't capture the screen")
+    return bytes(data.data())

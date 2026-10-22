@@ -18,7 +18,7 @@ from PySide6.QtGui import (QAction, QActionGroup, QColor, QGuiApplication, QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
-from . import DATA_DIR, MAC, T0, WIN, integrations, system, winapi
+from . import DATA_DIR, MAC, T0, WIN, assist, integrations, system, winapi
 from .actions import (CONFIG_PATH, back_item, build_items, cleanup_scripts, execute, item_from, load_config,
                       save_config)
 from .feedback import Sounds, Speaker
@@ -66,6 +66,9 @@ if MAC:
 elif not WIN:
     HOTKEY_LABELS["win+alt+space"] = "Super + Alt + Space"
 HK_TOGGLE = 1
+HK_ASSIST = 2
+ASSIST_HOTKEYS = {"win+alt+a": (MOD_WIN | MOD_ALT, 0x41), "ctrl+alt+a": (MOD_CONTROL | MOD_ALT, 0x41),
+                  "ctrl+shift+a": (MOD_CONTROL | MOD_SHIFT, 0x41)}
 NAV = {11: (0x25, -1), 12: (0x27, 1), 13: (0x26, -1), 14: (0x28, 1), 15: (0x0D, 0), 16: (0x1B, 0)}  # ← → ↑ ↓ ⏎ Esc
 
 
@@ -200,6 +203,7 @@ def pick_hand(feats: list[HandFeatures], faces: list, prev: tuple[float, float] 
 class RotaryApp(QObject):
     action_done = Signal(str, bool, str)   # item name, ok, error
     dynamic_ready = Signal(str)            # an app's games / scenes / projects were refreshed
+    assist_done = Signal(object, str)      # screen assist: the Answer (or None), error
 
     def __init__(self, app: QApplication, show_window: bool | None = None):
         super().__init__()
@@ -230,6 +234,9 @@ class RotaryApp(QObject):
         self.notch.scrolled.connect(self._on_notch_scroll)
         self.notch.customize.connect(lambda: self.show_window("notch"))
         self.notch.timer_done.connect(self._on_timer_done)
+        self.notch.assist.connect(self.start_assist)
+        self._assist_busy = False
+        self._assist_until = 0.0           # keeps the notch up for a screen-assist message
         self.live = LiveWatcher(self)
         self.live.state.connect(self.notch.set_live)
         self.live.event.connect(self._on_live_event)
@@ -245,6 +252,7 @@ class RotaryApp(QObject):
             from . import posix
             posix.prepare_keyboard()           # macOS: has to happen on this (the main) thread
         self._hotkey_now = None
+        self._assist_hotkey_now = None
         self.keyboard_session = False      # opened from the keyboard or the notch: mouse + arrow keys work
         self._kb_fg = 0                    # the window that was in front when it opened
 
@@ -277,6 +285,7 @@ class RotaryApp(QObject):
         self.tracker.status.connect(self.on_status)
         self.action_done.connect(self._on_action_done)
         self.dynamic_ready.connect(self._on_dynamic)
+        self.assist_done.connect(self._on_assist_done)
 
         from .ui.settings import MainWindow
         self.window = MainWindow(self)
@@ -410,6 +419,9 @@ class RotaryApp(QObject):
             return
         if item.kind == "back":
             return
+        if item.kind == "assist":
+            self.start_assist()
+            return
         self._flash_msg(f"Testing {item.name}…", "dot", BLUE, 1.0)
         self._run_action(item)
 
@@ -467,6 +479,7 @@ class RotaryApp(QObject):
             self.window.gestures.refresh()
             self.window.apps.sync_switches()
             self.window.notch.refresh()
+            self.window.assist.refresh()
         self._flash_msg(f"Loaded {len(self.items)} items", "done", GREEN)
         log.info("config reloaded: %d items", len(self.items))
 
@@ -491,14 +504,21 @@ class RotaryApp(QObject):
     # ------------------------------------------------------------ hotkeys
     def _register_hotkey(self) -> None:
         want = self.cfg.get("general", {}).get("hotkey", "ctrl+alt+space")
-        if want == self._hotkey_now:
-            return
-        self.hotkeys.unregister(HK_TOGGLE)
-        self._hotkey_now = want
-        if want in HOTKEYS:
-            mods, vk = HOTKEYS[want]
-            if not self.hotkeys.register(HK_TOGGLE, mods | MOD_NOREPEAT, vk):
-                self._flash_msg(f"{want.replace('+', ' + ').title()} is used by another app", "error", AMBER, 4.0)
+        if want != self._hotkey_now:
+            self.hotkeys.unregister(HK_TOGGLE)
+            self._hotkey_now = want
+            if want in HOTKEYS:
+                mods, vk = HOTKEYS[want]
+                if not self.hotkeys.register(HK_TOGGLE, mods | MOD_NOREPEAT, vk):
+                    self._flash_msg(f"{want.replace('+', ' + ').title()} is used by another app", "error", AMBER, 4.0)
+        want = assist.settings(self.cfg)["hotkey"]
+        if want != self._assist_hotkey_now:
+            self.hotkeys.unregister(HK_ASSIST)
+            self._assist_hotkey_now = want
+            if want in ASSIST_HOTKEYS:
+                mods, vk = ASSIST_HOTKEYS[want]
+                if not self.hotkeys.register(HK_ASSIST, mods | MOD_NOREPEAT, vk):
+                    self._flash_msg(f"{want.replace('+', ' + ').title()} is used by another app", "error", AMBER, 4.0)
 
     def _nav_keys(self, on: bool) -> None:
         for hid, (vk, _d) in NAV.items():
@@ -534,6 +554,9 @@ class RotaryApp(QObject):
 
     def _on_hotkey(self, hid: int) -> None:
         now = time.monotonic()
+        if hid == HK_ASSIST:
+            self.start_assist()
+            return
         if hid == HK_TOGGLE:
             if self.engine.phase == Phase.OPEN:
                 self._close_manual("keyboard")
@@ -644,7 +667,7 @@ class RotaryApp(QObject):
         mode = self.cfg.get("general", {}).get("notch", "auto")
         if mode == "off":
             return False
-        if mode == "on":
+        if mode == "on" or self._assist_showing():
             return True
         # auto: when there's no camera to use (switched off, or none found for a few seconds)
         return self._no_cam_since is not None and time.monotonic() - self._no_cam_since > 4.0
@@ -652,7 +675,8 @@ class RotaryApp(QObject):
     def _update_notch(self) -> None:
         gen = self.cfg.get("general", {})
         wanted = self._notch_wanted()
-        alert = time.monotonic() < self._alert_until
+        # Alerts and screen-assist answers may show over a borderless full-screen game, never an exclusive one.
+        alert = time.monotonic() < self._alert_until or (self._assist_showing() and self._fs_state != 3)
         show = wanted and (alert or not (self._fullscreen and gen.get("notch_hide_fullscreen", True)))
         # The live activities keep watching while a game hides the notch, so a saved clip can still pop up.
         if wanted and not self.live.isRunning():
@@ -671,6 +695,74 @@ class RotaryApp(QObject):
         elif not show and self.notch.isVisible():
             self.notch.hide()
             self._update_pill()
+
+    # ------------------------------------------------------------ screen assist
+    def _assist_showing(self) -> bool:
+        return self._assist_busy or self.notch.answer is not None or time.monotonic() < self._assist_until
+
+    def _assist_message(self, text: str, kind: str, accent: str, seconds: float) -> None:
+        self._assist_until = time.monotonic() + seconds
+        self._update_notch()
+        self._flash_msg(text, kind, accent, seconds)
+
+    def start_assist(self) -> None:
+        """Screen assist (hotkey, rotary item, notch menu): grab the screen, ask the AI, answer on the notch."""
+        if self._assist_busy:
+            return
+        missing = assist.ready(self.cfg)
+        if missing:
+            self._assist_message(missing, "error", AMBER, 6.0)
+            self.show_window("assist")
+            return
+        self._assist_busy = True
+        self.notch.clear_answer()
+        if self.engine.phase == Phase.OPEN:
+            self._close_manual("assist")
+        QTimer.singleShot(150, self._assist_capture)
+
+    def _assist_capture(self, tries: int = 0) -> None:
+        if self.dial.isVisible() and tries < 20:          # wait for the rotary to get out of the picture
+            QTimer.singleShot(120, lambda: self._assist_capture(tries + 1))
+            return
+        try:
+            shot = assist.capture()
+        except assist.AssistError as e:
+            self._assist_busy = False
+            self._assist_message(str(e), "error", RED, 5.0)
+            return
+        self._update_notch()
+        self._flash_msg("Looking at your screen…", "pulse", BLUE, assist.TIMEOUT + 5)
+        cfg = self.cfg
+
+        def work():
+            try:
+                self.assist_done.emit(assist.solve(shot, cfg), "")
+            except assist.AssistError as e:
+                self.assist_done.emit(None, str(e))
+            except Exception:
+                log.exception("screen assist failed")
+                self.assist_done.emit(None, "Screen assist failed (details in the log)")
+        threading.Thread(target=work, daemon=True, name="assist").start()
+
+    def _on_assist_done(self, ans, err: str) -> None:
+        self._assist_busy = False
+        self._flash = None
+        if err:
+            self._assist_message(err[:110], "error", RED, 6.0)
+            return
+        if not ans.found:
+            self._assist_message("No question or problem on screen", "dot", GRAY, 3.5)
+            return
+        seconds = float(assist.settings(self.cfg).get("seconds", 20))
+        self._assist_until = time.monotonic() + 1.0
+        self._update_notch()
+        self.sounds.play("confirm")
+        self._say(ans.spoken())
+        if self.notch.isVisible():
+            self.notch.show_answer(ans.choice, ans.answer, ans.detail, seconds)
+            self._update_pill()
+        else:                                            # the notch is switched off: the status pill says it
+            self._flash_msg(ans.headline(), "done", GREEN, seconds)
 
     # ------------------------------------------------------------ quick nav levels
     def _enter_quicknav(self, item) -> None:
@@ -862,7 +954,10 @@ class RotaryApp(QObject):
                 self.dial.play_execute()
                 self.sounds.play("confirm")
                 self._say(item.name)
-                self._run_action(item)
+                if item.kind == "assist":
+                    self.start_assist()
+                else:
+                    self._run_action(item)
                 self._end_keyboard()
             elif name in ("close", "closed"):
                 if name == "close":
@@ -1002,6 +1097,7 @@ class RotaryApp(QObject):
             self._save_timer.stop()
             self._save_cfg()
         self.hotkeys.unregister(HK_TOGGLE)
+        self.hotkeys.unregister(HK_ASSIST)
         self._nav_keys(False)
         self._shutdown()
         self.tray.hide()

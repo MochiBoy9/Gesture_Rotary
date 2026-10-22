@@ -12,16 +12,17 @@ import os
 import sys
 
 from PySide6.QtCore import QEvent, QFileInfo, QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QIcon, QImage, QKeySequence, QLinearGradient, QPainter,
+from PySide6.QtGui import (QColor, QFont, QFontDatabase, QFontMetricsF, QIcon, QImage, QKeySequence, QLinearGradient, QPainter,
                            QPainterPath, QPixmap, QRadialGradient)
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFileIconProvider,
                                QGridLayout, QHBoxLayout, QKeySequenceEdit, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QStackedWidget,
                                QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
-from .. import DATA_DIR, DEVICE, MAC, OS_NAME, WIN, __version__, apps, integrations, obs, system, winapi
+from .. import DATA_DIR, DEVICE, MAC, OS_NAME, ROOT, WIN, __version__, apps, integrations, obs, system, winapi
+from .. import assist as ai
 from ..actions import open_target
-from ..actions import ACTION_TYPES, CONFIG_PATH, MEDIA_PRESETS, Item, build_items
+from ..actions import ACTION_TYPES, ASSIST_ITEM, CONFIG_PATH, MEDIA_PRESETS, Item, build_items
 from ..gestures import EngineSnapshot, GestureSettings, Phase
 from . import widgets
 from .camera_view import VideoView
@@ -67,6 +68,12 @@ if MAC:
                ("win+alt+space", "⌥⌘Space  (Option + Command + Space)"), ("off", "Off")]
 elif not WIN:
     HOTKEYS[3] = ("win+alt+space", "Super + Alt + Space")
+# Screen assist. Ctrl + Alt + a letter is AltGr on many Windows keyboards (Polish ą…), so it isn't the default there.
+ASSIST_HOTKEYS = [("win+alt+a", "Win + Alt + A" if WIN else "Super + Alt + A"), ("ctrl+alt+a", "Ctrl + Alt + A"),
+                  ("ctrl+shift+a", "Ctrl + Shift + A"), ("off", "Off")]
+if MAC:
+    ASSIST_HOTKEYS = [("ctrl+alt+a", "⌃⌥A  (Control + Option + A)"), ("win+alt+a", "⌥⌘A  (Option + Command + A)"),
+                      ("ctrl+shift+a", "⌃⇧A  (Control + Shift + A)"), ("off", "Off")]
 if WIN:
     KEY_PRESETS = [("win+d", "Show desktop"), ("win+tab", "Task view"), ("win+shift+s", "Snip screen"),
                    ("ctrl+shift+esc", "Task Manager"), ("alt+tab", "Switch window"), ("win+e", "File Explorer"),
@@ -145,6 +152,8 @@ def action_summary(a: dict) -> str:
         return "PowerShell script"
     if t == "python":
         return "Python code"
+    if t == "assist":
+        return "Screen assist · AI answers what's on screen"
     return t
 
 
@@ -776,6 +785,15 @@ class ActionEditor(QWidget):
         v.addWidget(note)
         self._add_page("python", w)
 
+        # assist
+        w, v = page()
+        note = QLabel("An AI looks at your screen, finds the question or problem on it and answers on the notch "
+                      "(for multiple choice: which option). Choose the AI service on the Screen assist page.")
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        v.addWidget(note)
+        self._add_page("assist", w)
+
         for e in (self.app_target, self.app_args, self.url, self.open_target, self.keys, self.command,
                   self.wk_proc, self.wk_keys):
             e.textChanged.connect(self._emit)
@@ -1249,6 +1267,7 @@ class RotaryPage(QWidget):
         m.setStyleSheet(stylesheet())
         m.addAction("From your apps…", lambda: self.open_gallery())
         m.addAction("Any installed app…", self._add_app)
+        m.addAction("Screen assist (AI answers what's on screen)", lambda: self.add_items([ASSIST_ITEM]))
         m.addAction("Custom item", self._add_blank)
         m.exec(self.b_add.mapToGlobal(self.b_add.rect().topLeft()))
 
@@ -1927,6 +1946,188 @@ class NotchPage(QWidget):
         self._texts()
 
 
+class AssistPage(QWidget):
+    """Screen assist: an AI looks at the screen and answers the question on it, on the notch."""
+
+    def __init__(self, win: "MainWindow"):
+        super().__init__()
+        self.app = win.app
+        self.win = win
+        inner = QWidget()
+        v = QVBoxLayout(inner)
+        v.setContentsMargins(28, 24, 36, 32)
+        v.setSpacing(22)
+        header = page_header("Screen assist", "")
+        self.intro = header.findChildren(QLabel)[-1]
+        v.addWidget(header)
+        a = ai.settings(self.app.cfg)
+
+        c = Card("AI service", "The screenshot goes only to the service you choose, and only when you ask. Ollama "
+                               "keeps everything on this " + DEVICE + ".")
+        self.provider = QComboBox()
+        for prov in ai.PROVIDERS:
+            self.provider.addItem(prov.name, prov.id)
+        self.provider.setMinimumWidth(260)
+        self.provider_row = c.add(Row("Service", "", self.provider))
+        self.key = QLineEdit()
+        self.key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.key.setFixedWidth(260)
+        self.get_key = QPushButton("Get a free key…")
+        self.get_key.clicked.connect(self._open_key_page)
+        kw = QWidget()
+        kh = QHBoxLayout(kw)
+        kh.setContentsMargins(0, 0, 0, 0)
+        kh.addWidget(self.key)
+        kh.addWidget(self.get_key)
+        self.key_row = c.add(Row("API key", "Encrypted for your Windows account" if WIN else
+                                 "Kept in your macOS Keychain" if MAC else
+                                 "Kept in your keyring when one is available", kw))
+        self.model = QLineEdit()
+        self.model.setFixedWidth(260)
+        c.add(Row("Model", "Leave empty for the free default. It has to be able to see images.", self.model))
+        self.url = QLineEdit()
+        self.url.setFixedWidth(300)
+        self.url_row = c.add(Row("Address", "Only change this for another server", self.url))
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        self.status = QLabel("")
+        self.status.setObjectName("value")
+        self.status.setWordWrap(True)
+        test = QPushButton("Save && try it")
+        test.setObjectName("accent")
+        test.setToolTip("Hides this window, then answers whatever is on your screen")
+        test.clicked.connect(self._try)
+        h.addWidget(self.status, 1)
+        h.addWidget(test)
+        c.add(Row("Status", None, w))
+        v.addWidget(c)
+
+        c = Card("Using it")
+        self.hotkey = QComboBox()
+        for k, label in ASSIST_HOTKEYS:
+            self.hotkey.addItem(label, k)
+        self.hotkey.setCurrentIndex(max(0, self.hotkey.findData(a["hotkey"])))
+        self.hotkey.currentIndexChanged.connect(lambda _i: self._set("hotkey", self.hotkey.currentData()))
+        c.add(Row("Keyboard shortcut", "Works from any app", self.hotkey))
+        self.seconds = Segmented([("10", "10 s"), ("20", "20 s"), ("45", "45 s"), ("90", "90 s")],
+                                 str(int(a.get("seconds", 20))))
+        self.seconds.setFixedWidth(300)
+        self.seconds.changed.connect(lambda k: self._set("seconds", int(k)))
+        c.add(Row("Keep the answer on the notch", "Hover it for the explanation and Copy; click it to put it away",
+                  self.seconds))
+        self.add_btn = QPushButton("Add to the rotary")
+        self.add_btn.clicked.connect(self._add_item)
+        c.add(Row("Screen assist on the rotary", "An item that answers what's on screen when you choose it",
+                  self.add_btn))
+        v.addWidget(c)
+        v.addStretch(1)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(scroll_page(inner))
+
+        self.provider.currentIndexChanged.connect(self._provider_changed)
+        self.key.editingFinished.connect(self._save_key)
+        self.model.editingFinished.connect(lambda: self._per_provider("models", self.model.text()))
+        self.url.editingFinished.connect(lambda: self._per_provider("urls", self.url.text()))
+        self.refresh()
+
+    def _prov(self):
+        return ai.BY_ID.get(self.provider.currentData() or "", ai.PROVIDERS[0])
+
+    def _set(self, key: str, value) -> None:
+        self.app.cfg.setdefault("assist", {})[key] = value
+        self.app.apply_config()
+        self.refresh()
+
+    def _per_provider(self, section: str, value: str) -> None:
+        prov = self._prov()
+        d = self.app.cfg.setdefault("assist", {}).setdefault(section, {})
+        value = value.strip()
+        default = prov.model if section == "models" else prov.url
+        if value and value.rstrip("/") != default:
+            d[prov.id] = value
+        else:
+            d.pop(prov.id, None)
+        self.app.apply_config()
+        self.refresh()
+
+    def _save_key(self) -> None:
+        if not self.key.text().strip():
+            return
+        try:
+            ai.save_key(self.app.cfg, self._prov().id, self.key.text())
+        except OSError as e:
+            self.status.setText(f"Couldn't save the key: {e}")
+            return
+        self.key.clear()
+        self.app.apply_config()
+        self.refresh()
+
+    def _provider_changed(self, _i) -> None:
+        self._set("provider", self._prov().id)
+
+    def _open_key_page(self) -> None:
+        prov = self._prov()
+        open_target(prov.key_url or "https://ollama.com/download")
+
+    def _has_item(self) -> bool:
+        return any((d.get("action") or {}).get("type") == "assist" for d in self.app.cfg.get("items", []))
+
+    def _add_item(self) -> None:
+        if not self._has_item():
+            self.app.cfg.setdefault("items", []).append(copy.deepcopy(ASSIST_ITEM))
+            self.app.apply_config()
+            self.win.rotary.reload(self.win.rotary.list.currentRow())
+        self.refresh()
+
+    def _try(self) -> None:
+        self._save_key()
+        self._per_provider("models", self.model.text())
+        self._per_provider("urls", self.url.text())
+        missing = ai.ready(self.app.cfg)
+        if missing:
+            self.status.setText(missing)
+            return
+        self.status.setText("Asking… the answer appears on the notch")
+        self.win.showMinimized()
+        QTimer.singleShot(700, self.app.start_assist)
+
+    def refresh(self) -> None:
+        cfg = self.app.cfg
+        a = ai.settings(cfg)
+        prov = ai.provider(cfg)
+        label = dict((k, t.split("  ")[0]) for k, t in ASSIST_HOTKEYS).get(a["hotkey"], "")
+        how = f"Press {label}, choose" if label and a["hotkey"] != "off" else "Choose"
+        self.intro.setText(
+            f"{how} Screen assist on the rotary, or right-click the notch, and an AI looks at your screen, finds the "
+            "question or problem on it and answers on the notch. For multiple choice it tells you which option "
+            "(A, B, C…). It works with free AI services.")
+        self.provider.blockSignals(True)
+        self.provider.setCurrentIndex(max(0, self.provider.findData(prov.id)))
+        self.provider.blockSignals(False)
+        self.provider_row.subtitle.setText(prov.note)
+        has_key = bool(a["keys"].get(prov.id))
+        self.key_row.setVisible(bool(prov.key_url))
+        self.key.setPlaceholderText("saved — paste a new one to replace it" if has_key else "Paste your API key")
+        self.get_key.setText("Get a free key…" if prov.id != "openai" else "Get a key…")
+        self.model.setPlaceholderText(prov.model)
+        self.model.setText(str(a["models"].get(prov.id, "")))
+        self.url.setPlaceholderText(prov.url)
+        self.url.setText(str(a["urls"].get(prov.id, "")))
+        self.url_row.setVisible(prov.style != "gemini")
+        missing = ai.ready(cfg)
+        self.status.setText(("Paste an API key above" + (", or choose Ollama to run it on this " + DEVICE
+                                                          if prov.id != "openai" else "") if missing else
+                             f"Ready · {prov.name} · {ai.model_for(cfg, prov)}"))
+        self.add_btn.setEnabled(not self._has_item())
+        self.add_btn.setText("On the rotary" if self._has_item() else "Add to the rotary")
+        self.hotkey.blockSignals(True)
+        self.hotkey.setCurrentIndex(max(0, self.hotkey.findData(a["hotkey"])))
+        self.hotkey.blockSignals(False)
+        self.seconds.set_value(str(int(a.get("seconds", 20))))
+
+
 class CameraPage(QWidget):
     def __init__(self, win: "MainWindow"):
         super().__init__()
@@ -2045,6 +2246,56 @@ class CameraPage(QWidget):
         self.view.update()
 
 
+# The license texts shipped next to the app (and at the top of the repo): (title, file).
+LICENSES = [("Gesture Rotary — MIT License", "LICENSE"), ("Third-party software", "THIRD_PARTY_NOTICES.txt"),
+            ("Apache License 2.0", "licenses/Apache-2.0.txt"), ("GNU LGPL 3.0", "licenses/LGPL-3.0.txt"),
+            ("GNU GPL 3.0", "licenses/GPL-3.0.txt"), ("GNU LGPL 2.1", "licenses/LGPL-2.1.txt"),
+            ("Python Software Foundation License", "licenses/Python.txt")]
+COPYRIGHT = "Copyright © 2026 MochiBoy9"
+
+
+class LicensesDialog(QDialog):
+    """Gesture Rotary's license, the third-party notices and the full license texts they refer to."""
+
+    def __init__(self, parent=None, start: int = 0):
+        super().__init__(parent)
+        self.setWindowTitle("Licenses")
+        self.setStyleSheet(stylesheet() + "QDialog { background: #18181c; }")
+        self.resize(980, 640)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(16)
+        self.list = QListWidget()
+        self.list.setFixedWidth(250)
+        self.list.setAccessibleName("Licenses")
+        for title, _ in LICENSES:
+            self.list.addItem(title)
+        root.addWidget(self.list)
+        right = QVBoxLayout()
+        right.setSpacing(10)
+        self.text = QPlainTextEdit()
+        self.text.setReadOnly(True)
+        self.text.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        self.text.setMinimumWidth(self.text.fontMetrics().horizontalAdvance("M" * 80) + 40)   # the texts' width
+        self.text.setAccessibleName("License text")
+        right.addWidget(self.text, 1)
+        close = QPushButton("Done")
+        close.clicked.connect(self.accept)
+        right.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
+        root.addLayout(right, 1)
+        self.list.currentRowChanged.connect(self._show)
+        self.list.setCurrentRow(start)
+
+    def _show(self, row: int) -> None:
+        if row < 0:
+            return
+        try:
+            self.text.setPlainText((ROOT / LICENSES[row][1]).read_text(encoding="utf-8"))
+        except OSError:
+            self.text.setPlainText(f"{LICENSES[row][1]} is missing from this copy of Gesture Rotary.\n"
+                                   "See https://github.com/MochiBoy9/Gesture_Rotary")
+
+
 class GeneralPage(QWidget):
     def __init__(self, win: "MainWindow"):
         super().__init__()
@@ -2093,6 +2344,15 @@ class GeneralPage(QWidget):
         self.python.setFixedWidth(300)
         self.python.changed.connect(lambda k: self.set("general", "python", k))
         c.add(Row("Python for code actions", "Your own Python has your packages", self.python))
+        v.addWidget(c)
+
+        c = Card("About")
+        b = QPushButton("View")
+        b.clicked.connect(lambda: LicensesDialog(self, 0).exec())
+        c.add(Row("License", f"MIT License · {COPYRIGHT}", b))
+        b = QPushButton("View")
+        b.clicked.connect(lambda: LicensesDialog(self, 1).exec())
+        c.add(Row("Third-party software", "Qt, MediaPipe, OpenCV, NumPy and more, each under its own license", b))
         v.addWidget(c)
 
         c = Card("Advanced")
@@ -2256,7 +2516,7 @@ class WelcomePage(QWidget):
 class MainWindow(QWidget):
     PAGES = [("welcome", "Welcome", "E80F", "#0A84FF"), ("rotary", "Rotary", "E8F1", "#0A84FF"),
              ("apps", "Apps", "F0E2", "#FF375F"), ("gestures", "Controls", "E815", "#FF9F0A"),
-             ("notch", "Notch", "E962", "#5E5CE6"),
+             ("notch", "Notch", "E962", "#5E5CE6"), ("assist", "Screen assist", "E897", "#BF5AF2"),
              ("accessibility", "Accessibility", "E776", "#30D158"), ("camera", "Camera", "E722", "#64D2FF"),
              ("general", "General", "E713", "#8E8E93")]
 
@@ -2328,6 +2588,7 @@ class MainWindow(QWidget):
         self.rotary = RotaryPage(self)
         self.gestures = GesturesPage(self)
         self.notch = NotchPage(self)
+        self.assist = AssistPage(self)
         self.accessibility = AccessibilityPage(self)
         self.camera = CameraPage(self)
         self.general = GeneralPage(self)
@@ -2372,6 +2633,8 @@ class MainWindow(QWidget):
             self.apps.sync_switches()
         elif page is self.notch:
             self.notch.refresh()
+        elif page is self.assist:
+            self.assist.refresh()
         elif page is self.camera:
             self.camera.refresh()
 

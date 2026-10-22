@@ -118,6 +118,32 @@ OBS works with no setup: if OBS is closed, choosing Record starts OBS already re
 is open, turn on *Tools → WebSocket Server Settings* in OBS and enter the password in *Apps → OBS Studio*. The
 password is encrypted for your Windows account (on a Mac it goes in your Keychain).
 
+## Screen assist (AI)
+
+Press **Win + Alt + A** (Mac: **⌃⌥A**, Linux: **Super + Alt + A**). You can also choose *Screen assist* on the rotary, or right-click the
+notch → *Solve what's on screen*. An AI looks at your screen, finds the question or problem on it and answers
+on the notch:
+
+- **Multiple choice**: the option to pick in a badge, then its text, e.g. **B** · Mitochondria.
+- **Anything else** (maths, a puzzle, an error message, a bug in code, a form): a short answer, e.g. `x = 4`.
+- **Hover** the answer for a sentence on why, plus *Copy*. **Click** it to put it away. Otherwise it stays
+  for 20 seconds (or 10 / 45 / 90).
+
+It works with free AI services. Pick one on the *Screen assist* page:
+
+| Service | Cost | Setup |
+| --- | --- | --- |
+| **Google Gemini** (default) | Free tier | Get a key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) with a Google account and paste it in. No card needed. |
+| **Groq** | Free tier | Key from [console.groq.com/keys](https://console.groq.com/keys). Very fast. |
+| **OpenRouter** | Free models (`…:free`) | Key from [openrouter.ai/keys](https://openrouter.ai/keys). |
+| **Ollama** | Free, private | Runs on your own computer, so nothing leaves it. Install [Ollama](https://ollama.com/download), then `ollama pull gemma3` (or another vision model such as `qwen2.5vl`). No key needed. |
+| **ChatGPT / OpenAI-compatible** | OpenAI's API is paid | An OpenAI key, or change the address to use LM Studio or any other OpenAI-compatible server. |
+
+Every service lets you change the model. Keys are kept the same way as the OBS password: encrypted for your Windows
+account, in the macOS Keychain, or in the Linux keyring. The screenshot (the screen under the mouse) goes only
+to the service you chose, and only when you ask. On a Mac, allow **Screen Recording** the first time; without it
+the AI only sees your wallpaper. On Linux it needs X11: Wayland doesn't let apps capture the screen this way.
+
 ## Accessibility
 
 *Accessibility* offers quick setups:
@@ -174,7 +200,7 @@ dev/run-debug.sh                        # run from source with logs and the wind
 Everywhere:
 
 ```
-uv run pytest -q                        # gestures, glass, notch, live activities, Quick nav, OBS, macOS / Linux…
+uv run pytest -q                        # gestures, glass, notch, live activities, Quick nav, OBS, screen assist…
 uv run python tools/render_dial.py out  # render rotary states to PNGs
 uv run python tools/render_notch.py out # render the notch's states to one PNG
 uv run python tools/shot_window.py out  # screenshots of the window's pages
@@ -212,3 +238,10 @@ sounddevice dependencies are overridden away in `pyproject.toml` (the tracker gi
 
 On Windows, the virtual environment and build folders live under `%LOCALAPPDATA%\GestureRotary` because
 MediaPipe's deep file paths break Windows' 260-character path limit in long folders.
+
+## License
+
+Gesture Rotary is released under the [MIT License](LICENSE). The release builds also bundle Qt / PySide6,
+MediaPipe and its models, OpenCV, NumPy and other libraries, each under its own license (LGPL, Apache 2.0,
+BSD, MIT and others). [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) lists them, with the full texts in
+[licenses/](licenses). The app shows them all under *General → About*, and every download includes them.
