@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.5.0] — Screen assist
+
+### New
+- **Screen assist**: press **Win + Alt + A** (Mac: **⌃⌥A**, Linux: **Super + Alt + A**), choose *Screen assist* on the rotary, or
+  right-click the notch → *Solve what's on screen*. An AI looks at your screen, finds the question or problem
+  on it and answers on the notch:
+  - multiple choice: the option to pick (**A**, **B**, **C**…) in a badge, then its text
+  - anything else (maths, puzzles, error messages, code, forms): a short answer
+  - hover the answer for a sentence on why and a *Copy* button; click it to put it away
+- **Free AI services**: Google Gemini (free API key from Google AI Studio, the default), Groq and OpenRouter
+  (free tiers), or Ollama, which is free, private and runs on your own computer. ChatGPT and any
+  OpenAI-compatible server (LM Studio…) work too. Set it up on the new *Screen assist* page: service, API key,
+  model, keyboard shortcut and how long the answer stays.
+- API keys are stored like the OBS password: encrypted for your Windows account, in the macOS Keychain, or in
+  the Linux keyring. The screenshot goes only to the service you chose, and only when you ask.
+- *Rotary → + → Screen assist* adds it to the rotary (or *Add to the rotary* on its page).
+- When screen assist is in use, the notch appears even in *Auto* mode with a camera, and over borderless
+  full-screen games. With the notch set to *Never*, the answer shows in the status pill instead.
+
 ## [1.4.0] — macOS and Linux
 
 ### New
