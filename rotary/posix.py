@@ -341,10 +341,12 @@ def press_keys(names: list[str]) -> None:
 # --------------------------------------------------------------------------- global hotkeys
 # The callers speak Windows' RegisterHotKey language (MOD_* flags and virtual-key codes); these translate.
 MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN = 0x1, 0x2, 0x4, 0x8
-_VK_NAMES = {0x20: "space", 0x25: "left", 0x26: "up", 0x27: "right", 0x28: "down", 0x0D: "enter", 0x1B: "esc"}
-_MAC_SPECIAL = {"space": 49, "left": 123, "right": 124, "down": 125, "up": 126, "enter": 36, "esc": 53}
+_VK_NAMES = {0x20: "space", 0x25: "left", 0x26: "up", 0x27: "right", 0x28: "down", 0x0D: "enter", 0x1B: "esc",
+             0xBB: "equal", 0xBD: "minus", 0x6B: "kp_add", 0x6D: "kp_subtract"}
+_MAC_SPECIAL = {"space": 49, "left": 123, "right": 124, "down": 125, "up": 126, "enter": 36, "esc": 53,
+                "equal": 24, "minus": 27, "kp_add": 69, "kp_subtract": 78}
 _X_SPECIAL = {"space": "space", "left": "Left", "right": "Right", "down": "Down", "up": "Up", "enter": "Return",
-              "esc": "Escape"}
+              "esc": "Escape", "equal": "equal", "minus": "minus", "kp_add": "KP_Add", "kp_subtract": "KP_Subtract"}
 
 
 def _vk_name(vk: int) -> str:

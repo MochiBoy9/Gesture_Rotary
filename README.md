@@ -112,9 +112,18 @@ exclusive full-screen ones). *Look* switches between Dark (like a real notch) an
 | Click the notch, or scroll on it, press **Ctrl + Alt + Space**, or hold the middle mouse button | Opens the rotary for the mouse and keyboard |
 | Scroll (anywhere), or drag around the ring | Turns it |
 | Click an item | Brings it to the top; click it again (or the centre) to open it |
-| Right-click · Esc | Goes back out of a Quick nav ring, or closes |
+| Right-click · Esc · the ‹ at the top | Goes back out of a Quick nav ring, or closes |
 | ← → · Enter | Turn · open |
+| Drag, click or scroll the slider beside it · **+** / **−** | Changes the volume (what the two-finger slider does by hand) |
 | Click outside it | Closes it |
+
+Hover the notch for a moment with nothing playing on it and it says *Click to open wheel*.
+
+Under the ring the rotary shows the time (9:41 AM, or 24-hour under *General → Appearance*), the date and the
+weather: an icon for sun, cloud, fog, rain, snow or a storm, and the temperature (°F in the US, °C elsewhere).
+The weather comes from [wttr.in](https://wttr.in), which works out roughly where you are from your internet
+address; switch *Weather* off to stop it asking, or set `"weather_place"` under `"appearance"` in config.json to
+a city.
 
 While it's open this way, clicks and scrolls outside the rotary stop at Gesture Rotary: the app underneath, say a
 full-screen game or video, never gets them, and clicking the rotary or the notch never takes the focus, so nothing

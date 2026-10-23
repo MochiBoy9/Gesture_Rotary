@@ -136,6 +136,9 @@ DEFAULT_CONFIG = {
         "high_contrast": False,
         "reduce_motion": False,
         "speak": False,
+        "dial_clock": "12h",     # the clock under the rotary: 12h | 24h | off
+        "dial_weather": True,    # with the weather beside it (from wttr.in)
+        "weather_place": "",     # where, for the weather ('' = worked out from the internet address)
     },
     "general": {
         "keep_in_taskbar": True,

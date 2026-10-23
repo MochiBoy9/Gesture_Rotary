@@ -5,8 +5,9 @@ with ctypes), so it changes silently, without Windows' volume flyout appearing o
 If that fails, the volume keys. macOS: AppleScript's `output volume`. Linux: PulseAudio / PipeWire through
 `pactl`, or ALSA's `amixer`.
 
-`Volume.change(steps)` never blocks the caller for long: on macOS and Linux the commands run on one
-background thread, and changes that arrive while one is running are added together."""
+`Volume.change(steps)` and `Volume.set(level)` (the mouse's slider beside the rotary) never block the caller for
+long: on macOS and Linux the commands run on one background thread, and changes that arrive while one is running
+are added together (the last level set wins)."""
 from __future__ import annotations
 
 import ctypes
@@ -152,6 +153,7 @@ class Volume:
         self._ep: _EndpointVolume | None = None
         self._ep_failed = False
         self._pending = 0
+        self._target: float | None = None
         self._lock = threading.Lock()
         self._busy = False
         self._level: float | None = None
@@ -169,26 +171,68 @@ class Volume:
             self._busy = True
         threading.Thread(target=self._posix_worker, daemon=True, name="volume").start()
 
-    def _change_windows(self, steps: int) -> None:
-        if not self._ep_failed:
-            for attempt in range(2):
-                try:
-                    if self._ep is None:
-                        self._ep = _EndpointVolume()
-                    level = max(0.0, min(1.0, round(self._ep.get() / STEP + steps) * STEP))
+    def set(self, level: float) -> None:
+        """Set the volume to `level` (0..1)."""
+        level = max(0.0, min(1.0, round(level / STEP) * STEP))
+        if sys.platform == "win32":
+            self._windows(lambda cur: level)      # (the volume keys can't go to a level: then it does nothing)
+            return
+        with self._lock:
+            self._target, self._pending = level, 0
+            if self._busy:
+                return
+            self._busy = True
+        threading.Thread(target=self._posix_worker, daemon=True, name="volume").start()
+
+    def read(self, on_read: Callable[[float], None]) -> None:
+        """Report the current level (0..1, or -1 when it can't be read) to `on_read`, maybe from another thread."""
+        if sys.platform == "win32":
+            got = self._windows(None)
+            on_read(-1.0 if got is None else got)
+            return
+
+        def work():
+            try:
+                v = _posix_get()
+            except Exception:
+                v = None
+            if v is not None:
+                self._level = v
+            on_read(-1.0 if v is None else v)
+
+        threading.Thread(target=work, daemon=True, name="volume-read").start()
+
+    def _windows(self, fn: Callable[[float], float] | None) -> float | None:
+        """Core Audio: read the level, and with `fn` set it to fn(level). The level, or None if that fails."""
+        if self._ep_failed:
+            return None
+        for attempt in range(2):
+            try:
+                if self._ep is None:
+                    self._ep = _EndpointVolume()
+                level = self._ep.get()
+                if fn is not None:
+                    level = fn(level)
                     self._ep.set(level)
                     self.on_level(level)
-                    return
-                except Exception:
-                    if self._ep is not None:            # the speakers changed: fetch the new default once
-                        try:
-                            self._ep.release()
-                        except Exception:
-                            pass
-                        self._ep = None
-                    if attempt:
-                        log.warning("can't set the volume through Core Audio; using the volume keys", exc_info=True)
-                        self._ep_failed = True
+                return level
+            except Exception:
+                if self._ep is not None:            # the speakers changed: fetch the new default once
+                    try:
+                        self._ep.release()
+                    except Exception:
+                        pass
+                    self._ep = None
+                if attempt:
+                    log.warning("can't set the volume through Core Audio; using the volume keys", exc_info=True)
+                    self._ep_failed = True
+        return None
+
+    def _change_windows(self, steps: int) -> None:
+        if not steps:
+            return
+        if self._windows(lambda cur: max(0.0, min(1.0, round(cur / STEP + steps) * STEP))) is not None:
+            return
         from . import winapi
         key = "volume_up" if steps > 0 else "volume_down"
         for _ in range(abs(steps)):                     # each key press is 2 %, like a slider step
@@ -199,13 +243,17 @@ class Volume:
         while True:
             with self._lock:
                 steps, self._pending = self._pending, 0
-                if not steps:
+                target, self._target = self._target, None
+                if not steps and target is None:
                     self._busy = False
                     return
             try:
-                cur = _posix_get() if self._level is None else self._level
-                if cur is None:
-                    cur = 0.5
+                if target is not None:
+                    cur = target
+                else:
+                    cur = _posix_get() if self._level is None else self._level
+                    if cur is None:
+                        cur = 0.5
                 level = max(0.0, min(1.0, round(cur / STEP + steps) * STEP))
                 if _posix_set(level):
                     self._level = level

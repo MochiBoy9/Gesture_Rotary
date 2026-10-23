@@ -5,9 +5,9 @@ import math
 import time
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QLocale, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QCursor, QFont, QFontMetricsF, QGuiApplication, QLinearGradient,
-                           QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QTransform)
+                           QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRadialGradient, QTransform)
 from PySide6.QtWidgets import QWidget
 
 from ..actions import Item
@@ -37,6 +37,99 @@ def _canvas(w: float, h: float, dpr: float) -> QPixmap:
 def _hq(p: QPainter) -> None:
     p.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform
                      | QPainter.RenderHint.TextAntialiasing)
+
+
+# ------------------------------------------------------------------ the clock under the ring
+def dial_time(t: time.struct_time, h24: bool) -> str:
+    """'9:41 AM', or '21:41' as 24-hour time."""
+    if h24:
+        return f"{t.tm_hour:02d}:{t.tm_min:02d}"
+    return f"{(t.tm_hour % 12) or 12}:{t.tm_min:02d} {'AM' if t.tm_hour < 12 else 'PM'}"
+
+
+def dial_date(t: time.struct_time) -> str:
+    """'Fri, Oct 23'"""
+    return f"{time.strftime('%a', t)}, {time.strftime('%b', t)} {t.tm_mday}"
+
+
+def uses_fahrenheit() -> bool:
+    return QLocale().measurementSystem() == QLocale.MeasurementSystem.ImperialUSSystem
+
+
+def _cloud(cx: float, cy: float, k: float) -> QPainterPath:
+    """A cloud about 0.8·k wide, centred on (cx, cy)."""
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(cx - 0.38 * k, cy - 0.02 * k, 0.76 * k, 0.26 * k), 0.13 * k, 0.13 * k)
+    for x, y, r in ((-0.15, 0.0, 0.17), (0.09, -0.06, 0.23)):
+        c = QPainterPath()
+        c.addEllipse(QPointF(cx + x * k, cy + y * k), r * k, r * k)
+        path = path.united(c)
+    return path
+
+
+def _sun(p: QPainter, c: QPointF, k: float, color: QColor) -> None:
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(color)
+    p.drawEllipse(c, 0.2 * k, 0.2 * k)
+    p.setPen(QPen(color, 0.075 * k, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    for i in range(8):
+        a = math.radians(i * 45)
+        p.drawLine(QPointF(c.x() + math.cos(a) * 0.31 * k, c.y() + math.sin(a) * 0.31 * k),
+                   QPointF(c.x() + math.cos(a) * 0.43 * k, c.y() + math.sin(a) * 0.43 * k))
+
+
+def _moon(p: QPainter, c: QPointF, k: float, color: QColor) -> None:
+    disc = QPainterPath()
+    disc.addEllipse(c, 0.32 * k, 0.32 * k)
+    bite = QPainterPath()
+    bite.addEllipse(QPointF(c.x() + 0.2 * k, c.y() - 0.14 * k), 0.27 * k, 0.27 * k)
+    p.fillPath(disc.subtracted(bite), color)
+
+
+def draw_weather(p: QPainter, kind: str, c: QPointF, size: float, night: bool = False) -> None:
+    """A small weather icon (clear, partly, cloudy, fog, rain, snow, storm) filling a `size` square at `c`."""
+    k = size
+    sun_c, moon_c = QColor("#FFD60A"), QColor("#E5E5EA")
+    cloud_c, drop_c = white(0.95), QColor("#64D2FF")
+    p.save()
+    if kind == "clear":
+        (_moon if night else _sun)(p, c, k, moon_c if night else sun_c)
+    elif kind == "partly":
+        body = QPointF(c.x() - 0.16 * k, c.y() - 0.16 * k)
+        area = QPainterPath()
+        area.addRect(QRectF(c.x() - k, c.y() - k, 2 * k, 2 * k))
+        p.setClipPath(area.subtracted(_cloud(c.x() + 0.08 * k, c.y() + 0.1 * k, k * 0.9)), Qt.ClipOperation.IntersectClip)
+        if night:
+            _moon(p, body, k * 0.8, moon_c)
+        else:
+            _sun(p, body, k * 0.75, sun_c)
+        p.setClipping(False)
+        p.fillPath(_cloud(c.x() + 0.08 * k, c.y() + 0.1 * k, k * 0.78), cloud_c)
+    elif kind == "fog":
+        p.setPen(QPen(white(0.85), 0.08 * k, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        for y, x0, x1 in ((-0.22, -0.34, 0.26), (0.0, -0.26, 0.38), (0.22, -0.38, 0.2)):
+            p.drawLine(QPointF(c.x() + x0 * k, c.y() + y * k), QPointF(c.x() + x1 * k, c.y() + y * k))
+    elif kind in ("rain", "snow", "storm"):
+        p.fillPath(_cloud(c.x(), c.y() - 0.12 * k, k), cloud_c)
+        if kind == "rain":
+            p.setPen(QPen(drop_c, 0.07 * k, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            for x in (-0.2, 0.0, 0.2):
+                p.drawLine(QPointF(c.x() + x * k, c.y() + 0.24 * k), QPointF(c.x() + (x - 0.06) * k, c.y() + 0.42 * k))
+        elif kind == "snow":
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(white(0.95))
+            for x, y in ((-0.2, 0.3), (0.0, 0.42), (0.2, 0.3)):
+                p.drawEllipse(QPointF(c.x() + x * k, c.y() + y * k), 0.05 * k, 0.05 * k)
+        else:
+            bolt = QPolygonF([QPointF(c.x() + x * k, c.y() + y * k) for x, y in
+                              ((0.04, 0.12), (-0.12, 0.32), (0.0, 0.32), (-0.06, 0.48), (0.14, 0.26), (0.02, 0.26),
+                               (0.08, 0.12))])
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(sun_c)
+            p.drawPolygon(bolt)
+    else:                                   # cloudy
+        p.fillPath(_cloud(c.x(), c.y() + 0.02 * k, k), cloud_c)
+    p.restore()
 
 
 class DialPainter:
@@ -90,6 +183,11 @@ class DialPainter:
         self.volume_level = 0.0        # the volume slider: last level (0..1, or -1 when unknown)
         self.volume_until = 0.0
         self.volume_vis = Spring(0.0, 260.0, 30.0)
+        self.volume_hot = False        # the mouse is over the volume slider
+        self.clock_mode = "12h"        # the clock under the ring: 12h | 24h | off
+        self.weather = None            # weather.Weather, or None to leave the icon out
+        self.fahrenheit = uses_fahrenheit()
+        self._crumb_rect: QRectF | None = None   # the "‹ App" breadcrumb, clickable from the mouse
         self.invalidate()
 
     def set_accessibility(self, text_scale: float = 1.0, high_contrast: bool = False,
@@ -227,7 +325,8 @@ class DialPainter:
                 self.exiting = True
                 self.appear.target = 0.0
                 self.appear.k, self.appear.c = 120.0, 22.0
-        self.volume_vis.target = 1.0 if time.monotonic() < self.volume_until else 0.0
+        # From the mouse or the keyboard the slider stays out, so there's a way to change the volume without a hand.
+        self.volume_vis.target = 1.0 if (self.keyboard or time.monotonic() < self.volume_until) else 0.0
         for s in (self.appear, self.rot, self.title, self.grip_vis, self.tracked_vis,
                   self.point_vis, self.push_vis, self.px, self.py, self.level_kick, self.gauge_vis,
                   self.volume_vis):
@@ -415,6 +514,7 @@ class DialPainter:
         self._light(p, R, Rin, rc)
         if self.mode != "main":
             self._paint_mode(p, n, step, opacity)
+            self._clock(p, R)
             self._volume(p, R)
             return
 
@@ -516,6 +616,7 @@ class DialPainter:
             p.restore()
 
         self._texts(p, rc)
+        self._clock(p, R)
         self._volume(p, R)
 
     def _lens_body(self, p: QPainter, Rmid: float, lens_r: float) -> tuple[QPainterPath, QPointF]:
@@ -659,25 +760,43 @@ class DialPainter:
         p.drawText(QRectF(-width / 2, rc * 0.47 + (k - 1.0) * 10 - fm_h.height() / 2, width, fm_h.height()),
                    Qt.AlignmentFlag.AlignCenter, fm_h.elidedText(hint, Qt.TextElideMode.ElideRight, width - 16))
 
+    def volume_rect(self) -> QRectF:
+        """The volume slider's track, relative to the centre of the ring."""
+        R = self._geom()[0]
+        h, w = R * 0.95, 12.0 if not self.keyboard else 14.0
+        x = R + 38
+        return QRectF(x - w / 2, -h / 2, w, h)
+
+    def volume_at(self, y: float) -> float:
+        """The level (0..1) at height y on the slider."""
+        r = self.volume_rect()
+        return max(0.0, min(1.0, (r.bottom() - y) / r.height()))
+
     def _volume(self, p: QPainter, R: float) -> None:
-        """The volume slider's level: a tall glass capsule to the right of the ring while it's in use."""
+        """The volume slider: a tall glass capsule to the right of the ring while it's in use — always there when
+        the rotary was opened from the mouse or the keyboard, to drag, click or scroll."""
         v = self.volume_vis.value
         if v <= 0.01:
             return
         level = self.volume_level
-        h, w = R * 0.95, 12.0
-        x = R + 38
+        tr = self.volume_rect()
+        h, w, x = tr.height(), tr.width(), tr.center().x()
         p.save()
         p.setOpacity(p.opacity() * min(1.0, v))
         track = QPainterPath()
-        track.addRoundedRect(QRectF(x - w / 2, -h / 2, w, h), w / 2, w / 2)
+        track.addRoundedRect(tr, w / 2, w / 2)
         p.fillPath(track, QColor(10, 10, 14, 170))
         if level >= 0:
             fill = QPainterPath()
             fh = max(w, h * level)
             fill.addRoundedRect(QRectF(x - w / 2, h / 2 - fh, w, fh), w / 2, w / 2)
             p.fillPath(fill, white(0.92))
-        p.strokePath(track, QPen(white(0.35), 1.0))
+            if self.keyboard:                    # a knob to grab
+                ky = max(-h / 2 + w / 2, min(h / 2 - w / 2, h / 2 - h * level))
+                p.setPen(QPen(black(0.25), 1.0))
+                p.setBrush(white(1.0))
+                p.drawEllipse(QPointF(x, ky), w * 0.8, w * 0.8)
+        p.strokePath(track, QPen(white(0.6 if self.volume_hot else 0.35), 1.4 if self.volume_hot else 1.0))
         p.setFont(font(ICONS, 16 * self.text_scale))
         p.setPen(white(0.95))
         glyph = "\uE74F" if level == 0 else "\uE767"           # muted · speaker
@@ -687,6 +806,62 @@ class DialPainter:
             p.setFont(lf)
             p.drawText(QRectF(x - 24, h / 2 + 6, 48, fm.height()), Qt.AlignmentFlag.AlignCenter,
                        f"{level * 100:.0f}%")
+        if self.keyboard:
+            kf, kfm = self._font("text", 12 * self.text_scale, QFont.Weight.DemiBold)
+            p.setFont(kf)
+            p.setPen(white(0.62))
+            fh_ = self._font("text", 12 * self.text_scale, QFont.Weight.DemiBold)[1].height()
+            p.drawText(QRectF(x - 30, h / 2 + 8 + fh_, 60, kfm.height()), Qt.AlignmentFlag.AlignCenter, "−  +")
+        p.restore()
+
+    def _clock(self, p: QPainter, R: float) -> None:
+        """The time, the date and the weather in a small glass capsule under the ring."""
+        if self.clock_mode not in ("12h", "24h"):
+            return
+        k = self.text_scale
+        hc = self.high_contrast
+        t = time.localtime()
+        tf, fm_t = self._font("display", 16 * k, QFont.Weight.DemiBold)
+        df, fm_d = self._font("text", 13 * k, QFont.Weight.Medium if hc else QFont.Weight.Normal)
+        tm, dt = dial_time(t, self.clock_mode == "24h"), dial_date(t)
+        gap, pad = 10.0 * k, 14.0 * k
+        w = fm_t.horizontalAdvance(tm) + gap + fm_d.horizontalAdvance(dt)
+        wx = self.weather
+        icon = 18.0 * k
+        temp = wx.temperature(self.fahrenheit) if wx is not None else ""
+        if wx is not None:
+            w += gap + 1 + gap + icon + 4 * k + fm_d.horizontalAdvance(temp)
+        h = max(fm_t.height(), icon) + 12 * k
+        cy = R + 18 + h / 2
+        box = QRectF(-w / 2 - pad, cy - h / 2, w + 2 * pad, h)
+        pill = QPainterPath()
+        pill.addRoundedRect(box, h / 2, h / 2)
+        p.save()
+        soft_shadow(p, QPointF(0, cy), h / 2, 8, 0.16, dy=3)
+        p.fillPath(pill, QColor(10, 10, 14, 215) if hc else QColor(14, 14, 20, 150))
+        p.fillPath(pill, white(0.05))
+        p.strokePath(pill, QPen(white(0.9 if hc else 0.22), 1.0))
+        x = -w / 2
+        p.setFont(tf)
+        p.setPen(white(0.98))
+        p.drawText(QRectF(x, cy - fm_t.height() / 2, fm_t.horizontalAdvance(tm) + 2, fm_t.height()),
+                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, tm)
+        x += fm_t.horizontalAdvance(tm) + gap
+        p.setFont(df)
+        p.setPen(white(0.9 if hc else 0.65))
+        p.drawText(QRectF(x, cy - fm_d.height() / 2, fm_d.horizontalAdvance(dt) + 2, fm_d.height()),
+                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, dt)
+        x += fm_d.horizontalAdvance(dt) + gap
+        if wx is not None:
+            p.setPen(QPen(white(0.2), 1.0))
+            p.drawLine(QPointF(x, cy - h * 0.25), QPointF(x, cy + h * 0.25))
+            x += 1 + gap
+            draw_weather(p, wx.kind, QPointF(x + icon / 2, cy), icon, wx.night)
+            x += icon + 4 * k
+            p.setFont(df)
+            p.setPen(white(0.9 if hc else 0.75))
+            p.drawText(QRectF(x, cy - fm_d.height() / 2, fm_d.horizontalAdvance(temp) + 2, fm_d.height()),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, temp)
         p.restore()
 
     # ------------------------------------------------------------- pieces
@@ -863,12 +1038,25 @@ class DialPainter:
 
         # breadcrumb inside a Quick nav ring, and position dots
         top_y = -rc * 0.52
+        self._crumb_rect = None
         if self.crumb:
             cf, fm_c = self._font("text", 11.5 * k, QFont.Weight.DemiBold)
             p.setFont(cf)
-            p.setPen(white(0.85 if hc else 0.55))
-            p.drawText(QRectF(-width / 2, top_y - 14 - 12 * k, width, 14 * k + 4), Qt.AlignmentFlag.AlignCenter,
-                       fm_c.elidedText(self.crumb.upper(), Qt.TextElideMode.ElideRight, width * 0.8))
+            text = fm_c.elidedText(self.crumb.upper(), Qt.TextElideMode.ElideRight, width * 0.8)
+            rect = QRectF(-width / 2, top_y - 14 - 12 * k, width, 14 * k + 4)
+            if self.keyboard:
+                # From the mouse it's a button: "‹ APP" takes you back out of Quick nav.
+                text = "‹  " + text
+                tw = fm_c.horizontalAdvance(text) + 18
+                rect.translate(0, -5)
+                chip = QRectF(-tw / 2, rect.top() - 2, tw, rect.height() + 4)
+                path = QPainterPath()
+                path.addRoundedRect(chip, chip.height() / 2, chip.height() / 2)
+                p.fillPath(path, white(0.10))
+                p.strokePath(path, QPen(white(0.22), 1.0))
+                self._crumb_rect = chip
+            p.setPen(white(0.85 if hc else 0.55) if not self.keyboard else white(0.9))
+            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
         if n <= 16:
             gap = 9.0
             x0 = -gap * (n - 1) / 2
@@ -947,7 +1135,8 @@ class DialWindow(QWidget):
     """The rotary on screen. Opened by a gesture it lets every click through; opened from the notch or the
     keyboard it also takes the mouse: scroll or drag the ring to turn it, click an item to choose it,
     click it again (or the centre) to open it, right-click to go back or close."""
-    mouse = Signal(str, int)        # ("turn", ±n) | ("select", index) | ("open", 0) | ("back", 0)
+    # ("turn", ±n) | ("select", index) | ("open", 0) | ("back", 0) | ("volume", ±steps) | ("volume_set", percent)
+    mouse = Signal(str, int)
 
     def __init__(self, items: list[Item], size: int = 600, live_glass: bool = False):
         super().__init__(None)
@@ -961,6 +1150,7 @@ class DialWindow(QWidget):
         self._excluded = False
         self._drag: dict | None = None
         self._wheel = 0
+        self._vol_sent = -1
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.setInterval(16)
@@ -989,6 +1179,11 @@ class DialWindow(QWidget):
         if not self._timer.isActive():
             self._last = time.perf_counter()
             self._timer.start()
+
+    def volume_zone(self) -> QRectF:
+        """The volume slider with its icon and labels, in window coordinates (for the mouse hook)."""
+        r = self.painter_.volume_rect().adjusted(-30, -36, 30, 56)
+        return r.translated(self.width() / 2, self.height() / 2)
 
     def set_dial_size(self, size: int) -> None:
         if size != self.painter_.D and not self.isVisible():
@@ -1075,12 +1270,18 @@ class DialWindow(QWidget):
         return x, y, math.hypot(x, y), math.degrees(math.atan2(x, -y))
 
     def hit(self, pt) -> tuple[str, int]:
-        """What's under the mouse: ("item", index) | ("centre", 0) | ("ring", 0) | ("", 0)."""
+        """What's under the mouse: ("item", index) | ("centre", 0) | ("ring", 0) | ("volume", 0) | ("back", 0)
+        | ("", 0)."""
         dp = self.painter_
         n = len(dp.items)
         if not n or dp.exiting:
             return "", 0
         x, y, r, _a = self._local(pt)
+        if dp.volume_vis.value > 0.5 and dp.volume_rect().adjusted(-14, -10, 14, 10).contains(QPointF(x, y)):
+            return "volume", 0
+        cr = dp._crumb_rect
+        if cr is not None and cr.adjusted(-4, -4, 4, 4).contains(QPointF(x, y)):
+            return "back", 0
         R, Rin, Rmid, rc, lens_r = dp._geom()
         if dp.mode != "main":                 # no items to pick on a slides / video ring: drag it or scroll
             return ("centre", 0) if r <= rc else (("ring", 0) if Rin - 4 <= r <= R + 6 else ("", 0))
@@ -1110,8 +1311,12 @@ class DialWindow(QWidget):
         if ev.button() != Qt.MouseButton.LeftButton:
             return
         kind, idx = self.hit(ev.position())
-        _x, _y, _r, a = self._local(ev.position())
+        _x, y, _r, a = self._local(ev.position())
         self._drag = {"kind": kind, "idx": idx, "angle": a, "acc": 0.0, "moved": 0.0, "dragging": False}
+        if kind == "volume":
+            self._drag["dragging"] = True             # press, or press and drag: the level follows the mouse
+            self._set_volume(y)
+            return
         if kind == "ring":
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
@@ -1119,6 +1324,9 @@ class DialWindow(QWidget):
         if not self.interactive:
             return
         d = self._drag
+        if d is not None and d["kind"] == "volume":
+            self._set_volume(self._local(ev.position())[1])
+            return
         if d is not None and d["kind"] in ("item", "ring"):
             _x, _y, _r, a = self._local(ev.position())
             da = _wrap180(a - d["angle"])
@@ -1135,15 +1343,31 @@ class DialWindow(QWidget):
                 self.mouse.emit("turn", -sgn)
             return
         kind, _idx = self.hit(ev.position())
-        self.setCursor(Qt.CursorShape.PointingHandCursor if kind in ("item", "centre")
+        hot = kind == "volume"
+        if hot != self.painter_.volume_hot:
+            self.painter_.volume_hot = hot
+        self.setCursor(Qt.CursorShape.PointingHandCursor if kind in ("item", "centre", "volume", "back")
                        else (Qt.CursorShape.OpenHandCursor if kind == "ring" else Qt.CursorShape.ArrowCursor))
+
+    def leaveEvent(self, ev) -> None:
+        self.painter_.volume_hot = False
+
+    def _set_volume(self, y: float) -> None:
+        pct = int(round(self.painter_.volume_at(y) * 50)) * 2          # the slider's 2 % steps
+        if pct != self._vol_sent:
+            self._vol_sent = pct
+            self.painter_.volume_level = pct / 100                   # follow the mouse right away
+            self.mouse.emit("volume_set", pct)
 
     def mouseReleaseEvent(self, ev) -> None:
         d, self._drag = self._drag, None
+        self._vol_sent = -1
         if not self.interactive or d is None or ev.button() != Qt.MouseButton.LeftButton or d["dragging"]:
             return
         kind, idx = self.hit(ev.position())
-        if kind == "centre" and d["kind"] == "centre":
+        if kind == "back" and d["kind"] == "back":
+            self.mouse.emit("back", 0)
+        elif kind == "centre" and d["kind"] == "centre":
             self.mouse.emit("open", 0)
         elif kind == "item" and d["kind"] == "item" and idx == d["idx"]:
             n = max(1, len(self.painter_.items))
@@ -1157,8 +1381,12 @@ class DialWindow(QWidget):
             return
         dlt = ev.angleDelta()
         self._wheel += dlt.y() if abs(dlt.y()) >= abs(dlt.x()) else -dlt.x()
+        on_volume = self.hit(ev.position())[0] == "volume"
         while abs(self._wheel) >= 120:
             step = 1 if self._wheel < 0 else -1          # wheel down = next item
             self._wheel += 120 if self._wheel < 0 else -120
-            self.mouse.emit("turn", step)
+            if on_volume:
+                self.mouse.emit("volume", -step)         # over the slider: wheel up = louder
+            else:
+                self.mouse.emit("turn", step)
         ev.accept()

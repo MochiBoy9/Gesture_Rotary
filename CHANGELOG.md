@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### New
+- **A volume slider for the mouse and keyboard.** When the rotary opens from the notch, the keyboard shortcut or
+  the mouse button, a slider sits beside it: drag it, click it, or scroll over it, or press **+** and **−**. It
+  starts at the current level. It does what the two-finger slider does by hand, so there's a way to change the
+  volume without a camera or a tracked hand.
+- **The time, the date and the weather on the rotary**, in a glass capsule under the ring: *9:41 AM · Fri, Oct
+  23 · ☁ 18°*. 12-hour by default; *General → Appearance → Clock on the rotary* switches to 24-hour or turns it
+  off, and *Weather* turns the icon and temperature off. The weather comes from wttr.in (no account needed).
+
+### Changed
+- Hovering the notch no longer says "Rotary". Hover for a moment with no call, music, timer or clip on it and it
+  says *Click to open wheel* (with your keyboard shortcut).
+- Inside a Quick nav ring opened from the mouse, the app's name at the top is a *‹ Back* button.
+
 ## [1.8.0] — Your own AI model
 
 ### New
