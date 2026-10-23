@@ -27,6 +27,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -282,8 +283,21 @@ def _clean(obj):
 def save_config(cfg: dict, path: Path = CONFIG_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(_clean(cfg), indent=2), encoding="utf-8")
-    tmp.replace(path)
+    text = json.dumps(_clean(cfg), indent=2)
+    # Only this user can read it: it can hold secrets where there's no keyring to put them in (Linux).
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0), 0o600)
+    with open(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    if not WIN:
+        os.chmod(tmp, 0o600)                   # also when an older version made it readable
+    for attempt in range(5):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError:                # Windows: a virus scanner or the file watcher has it open
+            if attempt == 4:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def item_from(d: dict) -> Item | None:
@@ -405,20 +419,25 @@ def cleanup_scripts(max_age_s: float = 86400) -> None:
 
 def _run_checked(args: list[str], what: str, grace: float = 4.0, err_file: Path | None = None) -> None:
     """Start a process; if it fails quickly, raise with its error output."""
-    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
-                            creationflags=_NO_WINDOW, cwd=str(Path.home()))
-    try:
-        rc = proc.wait(timeout=grace)
-    except subprocess.TimeoutExpired:
-        return  # still running — fine (long scripts)
-    if rc != 0:
+    # Its errors go to a temporary file, not a pipe: a long-running script that writes a lot to stderr would
+    # otherwise fill the pipe nobody reads any more, and hang.
+    with tempfile.TemporaryFile() as errs:
+        proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=errs, stdin=subprocess.DEVNULL,
+                                creationflags=_NO_WINDOW, cwd=str(Path.home()))
+        try:
+            rc = proc.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            return  # still running — fine (long scripts)
+        if rc == 0:
+            return
         err = ""
         if err_file is not None and err_file.exists():
             err = err_file.read_text(encoding="utf-8", errors="replace")
-        if not err and proc.stderr is not None:
-            err = (proc.stderr.read() or b"").decode("utf-8", "replace")
-        lines = [ln for ln in err.strip().splitlines() if ln.strip()]
-        raise RuntimeError(f"{what} failed: {lines[-1] if lines else f'exit code {rc}'}")
+        if not err:
+            errs.seek(0)
+            err = errs.read(256_000).decode("utf-8", "replace")
+    lines = [ln for ln in err.strip().splitlines() if ln.strip()]
+    raise RuntimeError(f"{what} failed: {lines[-1] if lines else f'exit code {rc}'}")
 
 
 def execute(action: dict, cfg: dict | None = None) -> None:

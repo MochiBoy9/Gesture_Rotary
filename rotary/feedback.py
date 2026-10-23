@@ -168,7 +168,7 @@ class CommandVoice:
     def speak(self, text: str) -> None:
         if self.cmd[0] == "spd-say":
             subprocess.run(["spd-say", "-C"], capture_output=True, timeout=2)
-            args = ["spd-say", text]
+            args = ["spd-say", "--", text]          # "--": a name starting with "-" isn't an option
         else:
             if self.proc is not None and self.proc.poll() is None:
                 self.proc.terminate()

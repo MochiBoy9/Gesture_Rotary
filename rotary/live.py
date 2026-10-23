@@ -244,19 +244,21 @@ def _consent_root(kind: str) -> str:
     return rf"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\{kind}"
 
 
-def in_use(kind: str, exclude: tuple[str, ...] = ()) -> list[str]:
+def in_use(kind: str, exclude: tuple[str, ...] = (), running: set[str] | None = None) -> list[str]:
     """Apps using the microphone / webcam right now."""
-    return [name for name, _since in in_use_since(kind, exclude)]
+    return [name for name, _since in in_use_since(kind, exclude, running)]
 
 
-def in_use_since(kind: str, exclude: tuple[str, ...] = ()) -> list[tuple[str, float]]:
+def in_use_since(kind: str, exclude: tuple[str, ...] = (),
+                 running: set[str] | None = None) -> list[tuple[str, float]]:
     """(app, when it started — Unix time) for every app using the microphone / webcam right now. Windows
     records a start time and a zero stop time while an app holds the device."""
     if sys.platform != "win32":
         return []
     import winreg
     found: list[tuple[str, float]] = []
-    running = winapi.running_processes()      # a crashed app can leave "still in use" behind
+    if running is None:
+        running = winapi.running_processes()  # a crashed app can leave "still in use" behind
 
     def check(key, label: str) -> None:
         try:
@@ -334,11 +336,11 @@ DISCORD_EXES = ("discord.exe", "discordptb.exe", "discordcanary.exe")
 _cmdlines: dict[int, str] = {}
 
 
-def discord_call() -> float | None:
+def discord_call(procs: dict[int, str] | None = None) -> float | None:
     """When the current Discord voice call started (Unix time), or None if not in one. A voice connection is
     a UDP socket opened by Discord's app (renderer) process — muted or not. Its network-service process keeps
     unrelated UDP sockets of its own, so those don't count."""
-    pids = {pid for pid, name in winapi.processes().items() if name in DISCORD_EXES}
+    pids = {pid for pid, name in (winapi.processes() if procs is None else procs).items() if name in DISCORD_EXES}
     if not pids:
         _cmdlines.clear()
         return None
@@ -686,10 +688,13 @@ class LiveWatcher(QThread):
                 else:
                     self._clipping = ""
                 if self.opts["privacy"] or self.opts["calls"]:
-                    mic = await asyncio.to_thread(in_use_since, "microphone", self.exclude)
+                    # One list of what's running, shared by the checks below (each would take its own).
+                    procs = await asyncio.to_thread(winapi.processes) if sys.platform == "win32" else {}
+                    running = set(procs.values()) if sys.platform == "win32" else None
+                    mic = await asyncio.to_thread(in_use_since, "microphone", self.exclude, running)
                     call = None
                     if self.opts["calls"]:
-                        started = await asyncio.to_thread(discord_call)
+                        started = await asyncio.to_thread(discord_call, procs)
                         call = ("Discord", started) if started else call_from(mic)
                         if call and self._call and call[0] == self._call[0]:
                             call = (call[0], min(call[1], self._call[1]))   # a reconnect isn't a new call
@@ -697,7 +702,7 @@ class LiveWatcher(QThread):
                         log.info("call %s", f"started in {call[0]}" if call else "ended")
                     self._call = call
                     self._mic = [n for n, _t in mic] if self.opts["privacy"] else []
-                    self._cam = (await asyncio.to_thread(in_use, "webcam", self.exclude)
+                    self._cam = (await asyncio.to_thread(in_use, "webcam", self.exclude, running)
                                  if self.opts["privacy"] else [])
                 else:
                     self._mic, self._cam, self._call = [], [], None

@@ -82,6 +82,11 @@ class Backdrop:
     def pixmap(self) -> QPixmap:
         return QPixmap.fromImage(to_qimage(self.img))
 
+    def same_as(self, other: "Backdrop | None", tolerance: float = 1.0) -> bool:
+        """Nothing behind has visibly changed since `other`: the glass needn't be worked out again."""
+        return (other is not None and other.img.shape == self.img.shape and abs(other.f - self.f) < 1e-6
+                and float(np.abs(other.img - self.img).max(initial=0.0)) < tolerance)
+
 
 # --------------------------------------------------------------------------- shapes (signed distance)
 @dataclass

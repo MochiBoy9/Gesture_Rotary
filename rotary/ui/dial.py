@@ -1356,7 +1356,7 @@ class DialWindow(QWidget):
 
     def _refresh_glass(self) -> None:
         bd = liquid.Backdrop.from_pixmap(grab_behind(self))
-        if bd is not None:
+        if bd is not None and not bd.same_as(self.painter_.backdrop):
             self.painter_.backdrop = bd
 
     def _tick(self) -> None:

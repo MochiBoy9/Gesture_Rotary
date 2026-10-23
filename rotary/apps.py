@@ -231,11 +231,14 @@ def shortcut_targets(paths: list[str]) -> dict[str, str]:
         try:
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
             tmp.write_text("\n".join(todo), encoding="utf-8")
+            quoted = str(tmp).replace("'", "''")           # a user folder like C:\Users\O'Brien
             script = (f"$sh = New-Object -ComObject WScript.Shell; $o = @{{}}; "
-                      f"foreach ($p in Get-Content -LiteralPath '{tmp}' -Encoding UTF8) "
+                      f"foreach ($p in Get-Content -LiteralPath '{quoted}' -Encoding UTF8) "
                       f"{{ try {{ $o[$p] = $sh.CreateShortcut($p).TargetPath }} catch {{}} }}; "
                       f"$o | ConvertTo-Json -Compress")
             res = _ps_json(script) or {}
+            if not isinstance(res, dict):
+                res = {}
             for p in todo:
                 _lnk_cache[p] = str(res.get(p) or "")
             cache_file.write_text(json.dumps(_lnk_cache), encoding="utf-8")

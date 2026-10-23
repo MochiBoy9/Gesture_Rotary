@@ -585,7 +585,7 @@ class NotchWindow(QWidget):
         if not self.isVisible() or (self._bd is not None and not self._excluded and not force):
             return
         bd = liquid.Backdrop.from_pixmap(grab_behind(self))
-        if bd is not None:
+        if bd is not None and not bd.same_as(self._bd):     # a still desktop: keep the glass already made
             self._bd = bd
             self._bd_ver += 1
             self.update()
