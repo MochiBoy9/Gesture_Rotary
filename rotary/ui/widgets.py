@@ -95,7 +95,7 @@ def _stylesheet() -> str:
     QCheckBox:disabled {{ color: rgba(255,255,255,0.4); }}
     QPushButton {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(255,255,255,0.15),
         stop:1 rgba(255,255,255,0.08)); border: 1px solid rgba(255,255,255,0.13);
-        border-top-color: rgba(255,255,255,0.24); border-radius: 15px; padding: 6px 16px; min-height: 18px; }}
+        border-top-color: rgba(255,255,255,0.24); border-radius: 8px; padding: 6px 16px; min-height: 18px; }}
     QPushButton:hover {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(255,255,255,0.21),
         stop:1 rgba(255,255,255,0.12)); }}
     QPushButton:pressed {{ background: rgba(255,255,255,0.22); }}
@@ -107,7 +107,7 @@ def _stylesheet() -> str:
     QPushButton#accent:pressed {{ background: #0A6FDB; }}
     QPushButton#danger {{ color: #FF6961; }}
     QToolButton#icon {{ background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.08);
-        border-radius: 15px; font-family: 'Segoe Fluent Icons', 'Rotary Icons'; font-size: 13px;
+        border-radius: 8px; font-family: 'Segoe Fluent Icons', 'Rotary Icons'; font-size: 13px;
         min-width: 30px; min-height: 28px; }}
     QToolButton#icon:hover {{ background: rgba(255,255,255,0.15); }}
     QToolButton#icon:disabled {{ color: rgba(255,255,255,0.25); }}

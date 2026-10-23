@@ -14,6 +14,8 @@
 - **Fonts.** The app now ships with Inter, an open font drawn in the same spirit as Apple's San Francisco, and
   uses it for the window, the rotary, the notch and status messages (macOS keeps its own San Francisco). Pick
   any other installed font in *General › Appearance › Font*.
+- **A new app icon:** an open hand inside the rotary's ring of coloured items, so it says what the app does at a
+  glance.
 
 ## [1.8.0] — Your own AI model
 

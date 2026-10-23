@@ -2783,7 +2783,7 @@ class HomePage(QWidget):
         hl.addLayout(col, 1)
         self.open_btn = QPushButton("Open the rotary")
         self.open_btn.setObjectName("accent")
-        self.open_btn.setStyleSheet("padding: 9px 22px; border-radius: 19px; font-size: "
+        self.open_btn.setStyleSheet("padding: 9px 22px; border-radius: 10px; font-size: "
                                     f"{14 * widgets.UI_SCALE:.1f}px;")
         self.open_btn.clicked.connect(self.app.manual_open)
         hl.addWidget(self.open_btn, 0, Qt.AlignmentFlag.AlignVCenter)

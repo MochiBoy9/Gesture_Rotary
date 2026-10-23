@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QObject, QFileSystemWatcher, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QFont, QFontMetricsF, QGuiApplication, QIcon,
-                           QLinearGradient, QPainter, QPen, QPixmap, QRadialGradient)
+                           QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QTransform)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
@@ -125,30 +125,85 @@ class HotkeyWindow(QWidget):
 
 
 # --------------------------------------------------------------------------- icons
+def _hand_path(cx: float, cy: float, h: float) -> QPainterPath:
+    """An open palm, fingers up, `h` tall and centred on (cx, cy): the gesture that drives the rotary."""
+    k = h / 24.0
+    x0, y0 = cx - 13 * k, cy - 12 * k            # drawn on a 24 × 24 grid (a little left: the thumb)
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(x0 + 5.2 * k, y0 + 11 * k, 13.6 * k, 13 * k), 5 * k, 5 * k)      # palm
+    for x, length, tilt in ((6.8, 9.0, -10), (10.1, 11.6, -3.5), (13.4, 12.0, 3), (16.6, 9.8, 10)):
+        finger = QPainterPath()                                                                    # fingers
+        finger.addRoundedRect(QRectF(-1.55 * k, -length * k, 3.1 * k, (length + 2) * k), 1.55 * k, 1.55 * k)
+        path = path.united(QTransform().translate(x0 + x * k, y0 + 13 * k).rotate(tilt).map(finger))
+    thumb = QPainterPath()
+    thumb.addRoundedRect(QRectF(-1.75 * k, -8.5 * k, 3.5 * k, 10.5 * k), 1.75 * k, 1.75 * k)
+    thumb = QTransform().translate(x0 + 17.2 * k, y0 + 19 * k).rotate(48).map(thumb)
+    return path.united(thumb)
+
+
+# The ring of items on the app icon, clockwise from 12 o'clock (that one is the selected item).
+ICON_DOTS = ["#0A84FF", "#30D158", "#FFD60A", "#FF9F0A", "#FF375F", "#BF5AF2", "#5E5CE6", "#64D2FF"]
+
+
 def _icon_pixmap(px: int, active: bool = True, tile: bool = True) -> QPixmap:
-    """App icon: a glass dial with the selection lens at 12 o'clock."""
+    """App icon: the rotary itself (a glass ring of coloured items, the top one selected) around an open
+    hand. The tray version stays a plain ring with the selection lens, which still reads at 16 px."""
     pm = QPixmap(px, px)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     s = px / 64.0
     if tile:
+        body = QRectF(2 * s, 2 * s, 60 * s, 60 * s)
         g = QLinearGradient(0, 0, 0, px)
-        g.setColorAt(0, QColor("#2a2d3a"))
-        g.setColorAt(1, QColor("#0f1016"))
+        g.setColorAt(0, QColor("#24306b"))
+        g.setColorAt(1, QColor("#0c0e1c"))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(g)
-        p.drawRoundedRect(QRectF(2 * s, 2 * s, 60 * s, 60 * s), 14 * s, 14 * s)
-        glow = QRadialGradient(QPointF(32 * s, 34 * s), 30 * s)
-        glow.setColorAt(0, QColor(10, 132, 255, 90))
-        glow.setColorAt(1, QColor(10, 132, 255, 0))
+        p.drawRoundedRect(body, 14 * s, 14 * s)
+        glow = QRadialGradient(QPointF(32 * s, 30 * s), 30 * s)
+        glow.setColorAt(0, QColor(94, 92, 230, 120))
+        glow.setColorAt(1, QColor(94, 92, 230, 0))
         p.setBrush(glow)
-        p.drawEllipse(QPointF(32 * s, 34 * s), 30 * s, 30 * s)
+        p.drawRoundedRect(body, 14 * s, 14 * s)
+        c, r = QPointF(32 * s, 33 * s), 20.5 * s
+        # The glass track the items sit on.
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor(255, 255, 255, 34), 9.5 * s))
+        p.drawEllipse(c, r, r)
+        p.setPen(QPen(QColor(255, 255, 255, 70), 0.8 * s))
+        p.drawEllipse(c, r + 4.75 * s, r + 4.75 * s)
+        p.drawEllipse(c, r - 4.75 * s, r - 4.75 * s)
+        p.setPen(Qt.PenStyle.NoPen)
+        n = len(ICON_DOTS)
+        for i, col in enumerate(ICON_DOTS[1:], 1):
+            a = math.radians(-90 + i * 360 / n)
+            p.setBrush(QColor(col) if active else QColor("#8E8E93"))
+            p.drawEllipse(QPointF(c.x() + r * math.cos(a), c.y() + r * math.sin(a)), 3.3 * s, 3.3 * s)
+        # The selected item at 12 o'clock, under a lens.
+        top = QPointF(c.x(), c.y() - r)
+        p.setBrush(QColor(0, 0, 0, 70))
+        p.drawEllipse(top + QPointF(0, 1.2 * s), 6.8 * s, 6.8 * s)
+        p.setBrush(QColor("white"))
+        p.drawEllipse(top, 6.8 * s, 6.8 * s)
+        p.setBrush(QColor(ICON_DOTS[0]) if active else QColor("#8E8E93"))
+        p.drawEllipse(top, 5.2 * s, 5.2 * s)
+        # The open hand in the middle.
+        hand = _hand_path(c.x(), c.y() + 0.5 * s, 19.5 * s)
+        p.setBrush(QColor(0, 0, 0, 60))
+        p.drawPath(hand.translated(0, 1.0 * s))
+        hg = QLinearGradient(0, c.y() - 9 * s, 0, c.y() + 10 * s)
+        hg.setColorAt(0, QColor("white"))
+        hg.setColorAt(1, QColor("#dfe3f2"))
+        p.setBrush(hg)
+        p.drawPath(hand)
+        p.end()
+        return pm
     c = QPointF(32 * s, 33 * s)
     alpha = 235 if active else 120
-    p.setPen(QPen(QColor(255, 255, 255, alpha), (5.0 if tile else 6.0) * s))
+    p.setPen(QPen(QColor(255, 255, 255, alpha), 6.0 * s))
     p.setBrush(Qt.BrushStyle.NoBrush)
-    r = (19 if tile else 24) * s
+    r = 24 * s
     p.drawEllipse(c, r, r)
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(QColor("#0A84FF") if active else QColor("#8E8E93"))
