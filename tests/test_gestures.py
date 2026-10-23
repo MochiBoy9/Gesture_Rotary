@@ -131,15 +131,15 @@ def test_turning_selects_like_a_knob():
     assert s.e.snapshot().position == pytest.approx(2.0, abs=0.3)
 
 
-def test_grip_turn_release_executes():
+def test_grip_turn_then_point_executes():
     s = Sim(turn_style="direct")
     s.run(0.3)
     s.run(0.2, flex=1.0)
-    assert s.e.phase == Phase.OPEN
+    assert s.e.phase == Phase.OPEN and s.e.snapshot().grip_mode
     s.turn(0, -66, flex=1.0)
     assert s.e.selected == 3
     assert s.e.snapshot().grip_turned
-    ev = s.run(0.3, roll_deg=-66, flex=0.0)
+    ev = s.run(0.3, roll_deg=-66, finger_flex=(0, 1, 1, 1))     # index finger out
     assert ("execute", 3) in [(e[1], e[2]) for e in ev]
     ev = s.run(1.0, roll_deg=-66)
     assert "closed" in s.names(ev)
@@ -224,7 +224,7 @@ def test_selection_persists_between_openings():
     s.run(0.3)
     s.run(0.1, flex=1.0)
     s.turn(0, -44, flex=1.0)
-    s.run(0.2, roll_deg=-44)              # release → execute item 2
+    s.run(0.3, roll_deg=-44, finger_flex=(0, 1, 1, 1))   # point → execute item 2
     s.run(2.5, absent=True)
     s.run(0.3)
     s.run(0.2, flex=1.0)
@@ -430,7 +430,7 @@ def test_small_wobble_does_not_scroll():
     assert not [e for e in ev if e[1] == "select"]
 
 
-def test_grab_tilt_release_launches():
+def test_grab_tilt_point_launches():
     s = Sim()
     s.run(0.3)
     s.run(0.2, flex=1.0)
@@ -439,7 +439,9 @@ def test_grab_tilt_release_launches():
     ev = s.run(0.1, roll_deg=-30, flex=1.0)
     sel = s.e.selected
     assert sel == 1
-    ev = s.run(0.3, roll_deg=-30, flex=0.0)      # let go
+    ev = s.run(0.3, roll_deg=-30, flex=0.0)      # letting go doesn't launch
+    assert "execute" not in s.names(ev)
+    ev = s.run(0.3, roll_deg=-30, **POINT)       # pointing does
     assert ("execute", sel) in [(e[1], e[2]) for e in ev]
 
 
@@ -545,3 +547,86 @@ def test_no_rearm_hint_when_hold_to_open_is_off():
     s.run(0.8, palm=False)                         # dismiss
     s.run(1.0)
     assert not s.e.snapshot().rearm_needed
+
+
+# ------------------------------------------------------------------ grip mode: a heavy knob held in the hand
+def grabbed(**settings):
+    s = Sim(**settings)
+    s.run(0.3)
+    s.run(0.2, flex=1.0)
+    assert s.e.phase == Phase.OPEN and s.e.snapshot().grip_mode
+    return s
+
+
+def test_grip_tilt_turns_one_click_per_item_in_any_turn_style():
+    for style in ("tilt", "move", "direct"):
+        s = grabbed(turn_style=style)
+        ev = s.turn(0, 46, seconds=0.5, flex=1.0) + s.run(0.5, roll_deg=46, flex=1.0)
+        assert [e[2] for e in ev if e[1] == "select"] == [7, 6], style   # held still: stays put
+        ev = s.turn(46, 0, seconds=0.5, flex=1.0)
+        assert [e[2] for e in ev if e[1] == "select"] == [7, 0], style
+
+
+def test_grip_needs_force_to_click_over():
+    s = grabbed()
+    ev = s.turn(0, 15, seconds=0.3, flex=1.0) + s.run(0.5, roll_deg=15, flex=1.0)   # past halfway, not past the detent
+    assert not [e for e in ev if e[1] == "select"]
+    assert -0.35 < s.e.position < -0.05                           # strains toward the hand
+    ev = []
+    for i in range(180):                                           # wobble around a detent
+        ev += s.run(1 / 60, roll_deg=24 + 8 * math.sin(i / 6), flex=1.0)
+    assert len([e for e in ev if e[1] == "select"]) == 1
+
+
+def test_open_and_regrip_ratchets_without_moving():
+    s = grabbed()
+    s.turn(0, 46, seconds=0.4, flex=1.0)
+    assert s.e.selected == 6
+    s.turn(46, 20, seconds=0.2, flex=0.0)          # open the hand and turn back while it's open
+    ev = s.run(0.4, roll_deg=-10, flex=0.0)
+    ev += s.run(0.3, roll_deg=-10, flex=1.0)       # close it again somewhere else
+    assert not [e for e in ev if e[1] in ("select", "execute")]
+    assert s.e.selected == 6 and s.e.snapshot().grip_mode
+    ev = s.turn(-10, 36, seconds=0.4, flex=1.0)    # and keep turning from there
+    assert [e[2] for e in ev if e[1] == "select"] == [5, 4]
+
+
+def test_open_hand_for_long_switches_to_palm_mode():
+    s = grabbed(dwell_seconds=0)
+    s.turn(0, 23, seconds=0.3, flex=1.0)
+    assert s.e.selected == 7
+    s.run(1.3, roll_deg=23)
+    assert s.e.snapshot().grip_mode
+    s.run(0.4, roll_deg=23)
+    assert not s.e.snapshot().grip_mode and s.e.phase == Phase.OPEN
+    ev = s.turn(23, 53, seconds=0.25) + s.run(1.0, roll_deg=53)   # palm mode: tilt and hold scrolls
+    assert len([e for e in ev if e[1] == "select"]) >= 2
+
+
+def test_grip_mode_ignores_pinch_and_dwell():
+    s = grabbed(dwell_seconds=0.5)
+    s.turn(0, 23, seconds=0.3, flex=1.0)
+    ev = s.run(1.0, roll_deg=23, flex=1.0) + s.run(0.6, roll_deg=23, pinch=True)
+    assert "execute" not in s.names(ev)
+
+
+def test_palm_then_grip_enters_grip_mode():
+    s = Sim()
+    s.run(3.1)
+    assert not s.e.snapshot().grip_mode
+    s.run(0.2, flex=1.0)
+    assert s.e.snapshot().grip_mode
+    ev = s.turn(0, 23, seconds=0.3, flex=1.0) + s.run(1.0, roll_deg=23, flex=1.0)
+    assert [e[2] for e in ev if e[1] == "select"] == [7]
+
+
+def test_point_on_a_new_ring_needs_a_fresh_point():
+    s = grabbed()
+    s.run(0.3, **POINT)
+    assert s.e.phase == Phase.EXECUTING
+    s.e.enter_level(5, s.t)                        # opened a Quick nav ring
+    ev = s.run(0.5, **POINT)                       # still pointing: doesn't open again
+    assert "execute" not in s.names(ev)
+    s.run(0.2, flex=1.0)
+    ev = s.run(0.3, **POINT)
+    assert ("execute", 0) in [(e[1], e[2]) for e in ev]
