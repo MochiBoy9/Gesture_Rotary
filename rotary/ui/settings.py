@@ -8,8 +8,10 @@ from __future__ import annotations
 import copy
 import ctypes
 import itertools
+import logging
 import os
 import sys
+import threading
 
 from PySide6.QtCore import QEvent, QFileInfo, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QColor, QFont, QFontDatabase, QFontMetricsF, QIcon, QImage, QKeySequence, QLinearGradient, QPainter,
@@ -34,6 +36,7 @@ from .glass import ICONS, TEXT, app_icon, blur_backdrop, font, white
 from .widgets import (Card, ColorPicker, GlyphPicker, PresetTile, Row, Segmented, SliderControl, Switch,
                       icon_button, scroll_page, stylesheet)
 
+log = logging.getLogger(__name__)
 _uid = itertools.count(1)
 INTENTS = ("relaxed", "balanced", "strict")
 
@@ -1989,6 +1992,8 @@ class NotchPage(QWidget):
 class AssistPage(QWidget):
     """Screen assist: an AI looks at the screen and answers the question on it, on the notch."""
 
+    models_loaded = Signal(str, list, str)      # provider id, [(model id, name)], error ('' = fine)
+
     def __init__(self, win: "MainWindow"):
         super().__init__()
         self.app = win.app
@@ -2022,9 +2027,23 @@ class AssistPage(QWidget):
         self.key_row = c.add(Row("API key", "Encrypted for your Windows account" if WIN else
                                  "Kept in your macOS Keychain" if MAC else
                                  "Kept in your keyring when one is available", kw))
-        self.model = QLineEdit()
+        # Editable: the list holds the models the service offers this key, and any other name can be typed in.
+        self.model = QComboBox()
+        self.model.setEditable(True)
+        self.model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.model.setFixedWidth(260)
-        c.add(Row("Model", "Leave empty for the free default. It has to be able to see images.", self.model))
+        self.list_btn = QPushButton("List my models")
+        self.list_btn.setToolTip("Asks the service which models your key can use")
+        self.list_btn.clicked.connect(lambda: self._load_models(force=True))
+        mw = QWidget()
+        mh = QHBoxLayout(mw)
+        mh.setContentsMargins(0, 0, 0, 0)
+        mh.addWidget(self.model)
+        mh.addWidget(self.list_btn)
+        self.model_row = c.add(Row("Model", "", mw))
+        self._models: dict[str, list] = {}          # provider → [(id, name)] its key can use, once asked
+        self._loading: set[str] = set()
+        self.models_loaded.connect(self._models_loaded)
         self.url = QLineEdit()
         self.url.setFixedWidth(300)
         self.url_row = c.add(Row("Address", "Only change this for another server", self.url))
@@ -2068,7 +2087,8 @@ class AssistPage(QWidget):
 
         self.provider.currentIndexChanged.connect(self._provider_changed)
         self.key.editingFinished.connect(self._save_key)
-        self.model.editingFinished.connect(lambda: self._per_provider("models", self.model.text()))
+        self.model.lineEdit().editingFinished.connect(lambda: self._per_provider("models", self.model.currentText()))
+        self.model.activated.connect(lambda _i: self._per_provider("models", self.model.currentText()))
         self.url.editingFinished.connect(lambda: self._per_provider("urls", self.url.text()))
         self.refresh()
 
@@ -2104,6 +2124,39 @@ class AssistPage(QWidget):
         self.app.apply_config()
         self.refresh()
 
+    def _load_models(self, force: bool = False) -> None:
+        """Ask the service, in the background, which models the saved key can use."""
+        prov = self._prov()
+        if prov.id in self._loading or (prov.id in self._models and not force) or ai.ready(self.app.cfg):
+            if force and ai.ready(self.app.cfg):
+                self.status.setText(ai.ready(self.app.cfg))
+            return
+        self._loading.add(prov.id)
+        self.list_btn.setEnabled(False)
+        cfg = copy.deepcopy(self.app.cfg)
+
+        def work():
+            try:
+                self.models_loaded.emit(prov.id, ai.list_models(cfg, prov), "")
+            except ai.AssistError as e:
+                self.models_loaded.emit(prov.id, [], str(e))
+            except Exception:
+                log.exception("listing %s models failed", prov.name)
+                self.models_loaded.emit(prov.id, [], "Couldn't list the models (details in the log)")
+        threading.Thread(target=work, daemon=True, name="assist-models").start()
+
+    def _models_loaded(self, provider_id: str, models: list, error: str) -> None:
+        self._loading.discard(provider_id)
+        self.list_btn.setEnabled(True)
+        if error:
+            self.status.setText(error)
+            return
+        self._models[provider_id] = models
+        self.refresh()
+        if provider_id == self._prov().id:
+            self.status.setText(f"{len(models)} models can see images with your key; pick one above"
+                                if models else "The service didn't list any models that can see images")
+
     def _provider_changed(self, _i) -> None:
         self._set("provider", self._prov().id)
 
@@ -2123,7 +2176,7 @@ class AssistPage(QWidget):
 
     def _try(self) -> None:
         self._save_key()
-        self._per_provider("models", self.model.text())
+        self._per_provider("models", self.model.currentText())
         self._per_provider("urls", self.url.text())
         missing = ai.ready(self.app.cfg)
         if missing:
@@ -2142,7 +2195,7 @@ class AssistPage(QWidget):
         self.intro.setText(
             f"{how} Screen assist on the rotary, or right-click the notch, and an AI looks at your screen, finds the "
             "question or problem on it and answers on the notch. For multiple choice it tells you which option "
-            "(A, B, C…). It works with free AI services.")
+            "(A, B, C…). It works with free AI services, or with your own paid Claude, ChatGPT or Gemini account.")
         self.provider.blockSignals(True)
         self.provider.setCurrentIndex(max(0, self.provider.findData(prov.id)))
         self.provider.blockSignals(False)
@@ -2150,16 +2203,32 @@ class AssistPage(QWidget):
         has_key = bool(a["keys"].get(prov.id))
         self.key_row.setVisible(bool(prov.key_url))
         self.key.setPlaceholderText("saved — paste a new one to replace it" if has_key else "Paste your API key")
-        self.get_key.setText("Get a free key…" if prov.id != "openai" else "Get a key…")
-        self.model.setPlaceholderText(prov.model)
-        self.model.setText(str(a["models"].get(prov.id, "")))
+        self.get_key.setText("Get a key…" if prov.paid else "Get a free key…")
+        chosen = str(a["models"].get(prov.id, ""))
+        listed = self._models.get(prov.id, [])
+        self.model.blockSignals(True)
+        self.model.clear()
+        for mid, name in listed:
+            self.model.addItem(mid)
+            if name != mid:
+                self.model.setItemData(self.model.count() - 1, name, Qt.ItemDataRole.ToolTipRole)
+        self.model.lineEdit().setPlaceholderText(prov.model)
+        self.model.setEditText(chosen)
+        self.model.blockSignals(False)
+        default = "the default" if prov.paid else "the free default"
+        self.model_row.subtitle.setText(
+            f"Pick one your key can use, or leave it empty for {default}. It has to be able to see images."
+            if listed else f"Leave it empty for {default}, or List my models to pick one. It has to be able to see "
+                           "images.")
         self.url.setPlaceholderText(prov.url)
         self.url.setText(str(a["urls"].get(prov.id, "")))
         self.url_row.setVisible(prov.style != "gemini")
         missing = ai.ready(cfg)
         self.status.setText(("Paste an API key above" + (", or choose Ollama to run it on this " + DEVICE
-                                                          if prov.id != "openai" else "") if missing else
+                                                          if not prov.paid else "") if missing else
                              f"Ready · {prov.name} · {ai.model_for(cfg, prov)}"))
+        if not missing:
+            self._load_models()
         self.add_btn.setEnabled(not self._has_item())
         self.add_btn.setText("On the rotary" if self._has_item() else "Add to the rotary")
         self.hotkey.blockSignals(True)

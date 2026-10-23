@@ -164,8 +164,8 @@ DEFAULT_CONFIG = {
     "integrations": {"obs": {"host": "localhost", "port": 4455}},
     "camera": {"preferred": ""},
     "assist": {                  # screen assist (assist.py)
-        "provider": "gemini",    # gemini | groq | openrouter | ollama | openai
-        "models": {},            # provider → model ('' = its free default)
+        "provider": "gemini",    # gemini | groq | openrouter | ollama | anthropic | openai
+        "models": {},            # provider → model ('' = its default)
         "urls": {},              # provider → API address ('' = its default)
         "keys": {},              # provider → API key, encrypted like the OBS password
         "seconds": 20,           # how long the answer stays on the notch

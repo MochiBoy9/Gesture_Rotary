@@ -53,11 +53,29 @@ def test_ollama_request_runs_locally_without_a_key():
     assert base64.b64decode(body["messages"][1]["images"][0]) == JPEG
 
 
+def test_claude_request_sends_the_image_with_the_api_key():
+    p = assist.BY_ID["anthropic"]
+    url, headers, body = assist.build_request(p, p.model, p.url, "sk-ant", JPEG)
+    assert url == "https://api.anthropic.com/v1/messages"
+    assert headers["x-api-key"] == "sk-ant" and "Authorization" not in headers
+    assert headers["anthropic-version"] == assist.ANTHROPIC_VERSION
+    assert body["model"] == "claude-opus-5-5" and body["max_tokens"] > 0 and "JSON" in body["system"]
+    img, text = body["messages"][0]["content"]
+    assert img["source"]["media_type"] == "image/jpeg" and base64.b64decode(img["source"]["data"]) == JPEG
+    assert text == {"type": "text", "text": assist.ASK}
+    assert body["fallbacks"] == "default" and headers["anthropic-beta"].startswith("server-side-fallback")
+    # older models don't take fallbacks
+    _url, headers, body = assist.build_request(p, "claude-haiku-4-5", p.url, "sk-ant", JPEG)
+    assert "fallbacks" not in body and "anthropic-beta" not in headers
+
+
 def test_every_provider_has_a_free_or_local_option_and_a_model():
     for p in assist.PROVIDERS:
-        assert p.model and p.url.startswith("http") and p.style in ("gemini", "openai", "ollama")
-    free = [p for p in assist.PROVIDERS if p.id != "openai"]
+        assert p.model and p.url.startswith("http") and p.style in ("gemini", "openai", "ollama", "anthropic")
+    free = [p for p in assist.PROVIDERS if not p.paid]
     assert {p.id for p in free} == {"gemini", "groq", "openrouter", "ollama"}
+    assert {p.id for p in assist.PROVIDERS if p.paid} == {"anthropic", "openai"}
+    assert assist.BY_ID["openai"].model == "gpt-6-astra"
     assert DEFAULT_CONFIG["assist"]["provider"] == "gemini"
 
 
@@ -68,6 +86,11 @@ def test_reply_text_from_each_api():
     assert assist.reply_text("openai", {"choices": [{"message": {"content": "hi"}}]}) == "hi"
     assert assist.reply_text("openai", {"choices": [{"message": {"content": [{"type": "text", "text": "a"}]}}]}) == "a"
     assert assist.reply_text("ollama", {"message": {"content": "ok"}}) == "ok"
+    assert assist.reply_text("anthropic", {"stop_reason": "end_turn", "content": [
+        {"type": "thinking", "thinking": ""}, {"type": "text", "text": '{"found": '}, {"type": "text", "text": "true}"}]}
+    ) == '{"found": true}'
+    with pytest.raises(assist.AssistError, match="declined"):
+        assist.reply_text("anthropic", {"stop_reason": "refusal", "content": []})
     with pytest.raises(assist.AssistError, match="SAFETY"):
         assist.reply_text("gemini", {"promptFeedback": {"blockReason": "SAFETY"}})
 
@@ -110,6 +133,7 @@ def test_ready_says_what_is_missing():
     assert "Google Gemini API key" in assist.ready({"assist": {"provider": "gemini"}})
     assert assist.ready({"assist": {"provider": "ollama"}}) == ""
     assert "OpenAI" in assist.ready({"assist": {"provider": "openai"}})
+    assert "your Claude (Anthropic) API key" in assist.ready({"assist": {"provider": "anthropic"}})
     local = {"assist": {"provider": "openai", "urls": {"openai": "http://localhost:1234/v1"}}}
     assert assist.ready(local) == ""                          # LM Studio: no key
     assert assist.url_for(local, assist.BY_ID["openai"]) == "http://localhost:1234/v1"
@@ -136,23 +160,28 @@ def test_assist_is_an_item_type_that_runs_inside_the_app():
 
 # ------------------------------------------------------------------ talking to a server
 class _Server:
-    """A local stand-in for an AI service: replies with `status` and `body`, and remembers the request."""
+    """A local stand-in for an AI service: replies with `status` and `body` (or, when `body` is a function, what it
+    returns for the path asked), and remembers the requests."""
 
     def __init__(self, status=200, body=None):
         outer = self
-        self.status, self.body, self.seen = status, body or {}, {}
+        self.status, self.body, self.seen, self.paths = status, body or {}, {}, []
 
         class H(BaseHTTPRequestHandler):
             def do_POST(self):
                 n = int(self.headers.get("Content-Length", 0))
-                outer.seen = {"path": self.path, "headers": dict(self.headers),
-                              "body": json.loads(self.rfile.read(n))}
-                data = json.dumps(outer.body).encode()
+                outer.seen = {"path": self.path, "headers": self.headers,      # any case
+                              "body": json.loads(self.rfile.read(n)) if n else None}
+                outer.paths.append(self.path)
+                reply = outer.body(self.path) if callable(outer.body) else outer.body
+                data = json.dumps(reply).encode()
                 self.send_response(outer.status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+
+            do_GET = do_POST
 
             def log_message(self, *a):
                 pass
@@ -199,6 +228,121 @@ def test_server_errors_become_short_messages(status, body, match):
     try:
         with pytest.raises(assist.AssistError, match=match):
             assist.solve(JPEG, {"assist": {"provider": "ollama", "urls": {"ollama": srv.url}}})
+    finally:
+        srv.close()
+
+
+def test_solve_with_claude(monkeypatch):
+    srv = _Server(200, {"stop_reason": "end_turn", "content": [
+        {"type": "text", "text": '{"found": true, "choice": "A", "answer": "Paris"}'}]})
+    try:
+        cfg = {"assist": {"provider": "anthropic", "urls": {"anthropic": srv.url}, "models": {"anthropic": "claude-x"}}}
+        with pytest.raises(assist.AssistError, match="API key"):
+            assist.solve(JPEG, cfg)                           # Claude always needs a key
+        monkeypatch.setattr(assist.winapi, "unprotect", lambda token: "sk-ant-" + token)
+        cfg["assist"]["keys"] = {"anthropic": "tok"}
+        a = assist.solve(JPEG, cfg)
+    finally:
+        srv.close()
+    assert (a.choice, a.answer) == ("A", "Paris")
+    assert srv.seen["path"] == "/v1/messages" and srv.seen["body"]["model"] == "claude-x"
+    assert srv.seen["headers"]["x-api-key"] == "sk-ant-tok"
+
+
+def _with_key(monkeypatch, cfg, pid):
+    monkeypatch.setattr(assist.winapi, "unprotect", lambda token: token)
+    cfg["assist"].setdefault("keys", {})[pid] = "KEY"
+    return cfg
+
+
+def test_claude_models_are_listed_page_by_page_and_only_those_that_see_images(monkeypatch):
+    def reply(path):
+        if "after_id" not in path:
+            return {"data": [{"id": "claude-opus-5-5", "display_name": "Claude Opus 5.5",
+                              "capabilities": {"image_input": {"supported": True}}},
+                             {"id": "claude-blind", "display_name": "Blind",
+                              "capabilities": {"image_input": {"supported": False}}}],
+                    "has_more": True, "last_id": "claude-blind"}
+        return {"data": [{"id": "claude-haiku-5-5", "display_name": "Claude Haiku 5.5"}], "has_more": False}
+    srv = _Server(200, reply)
+    try:
+        cfg = _with_key(monkeypatch, {"assist": {"provider": "anthropic", "urls": {"anthropic": srv.url}}},
+                        "anthropic")
+        got = assist.list_models(cfg)
+    finally:
+        srv.close()
+    assert got == [("claude-opus-5-5", "Claude Opus 5.5"), ("claude-haiku-5-5", "Claude Haiku 5.5")]
+    assert srv.paths[0].startswith("/v1/models?limit=") and "after_id=claude-blind" in srv.paths[1]
+    assert srv.seen["headers"]["x-api-key"] == "KEY" and srv.seen["body"] is None
+
+
+def test_openai_models_skip_speech_and_pictures_newest_first(monkeypatch):
+    srv = _Server(200, {"data": [{"id": "gpt-6-luna", "created": 2}, {"id": "gpt-6-astra", "created": 3},
+                                 {"id": "whisper-1", "created": 9}, {"id": "gpt-image-2.5-flare", "created": 9},
+                                 {"id": "text-embedding-3-large", "created": 9}, {"id": "gpt-realtime-2", "created": 9},
+                                 {"id": "gpt-4o-mini-tts", "created": 9}]})
+    try:
+        cfg = _with_key(monkeypatch, {"assist": {"provider": "openai", "urls": {"openai": srv.url + "/v1"}}},
+                        "openai")
+        got = assist.list_models(cfg)
+    finally:
+        srv.close()
+    assert [m for m, _n in got] == ["gpt-6-astra", "gpt-6-luna"]
+    assert srv.seen["path"] == "/v1/models" and srv.seen["headers"]["Authorization"] == "Bearer KEY"
+
+
+def test_openrouter_models_are_filtered_by_what_they_read(monkeypatch):
+    srv = _Server(200, {"data": [{"id": "a/sees", "name": "Sees", "architecture": {"input_modalities": ["text", "image"]}},
+                                 {"id": "b/blind", "name": "Blind", "architecture": {"input_modalities": ["text"]}}]})
+    try:
+        cfg = _with_key(monkeypatch, {"assist": {"provider": "openrouter", "urls": {"openrouter": srv.url}}},
+                        "openrouter")
+        assert assist.list_models(cfg) == [("a/sees", "Sees")]
+    finally:
+        srv.close()
+
+
+def test_gemini_models_that_generate_text(monkeypatch):
+    srv = _Server(200, {"models": [
+        {"name": "models/gemini-4-argon", "displayName": "Gemini 4 Argon", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-3.8-flash-tts", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/text-embedding", "supportedGenerationMethods": ["embedContent"]}]})
+    try:
+        cfg = _with_key(monkeypatch, {"assist": {"provider": "gemini"}}, "gemini")
+        monkeypatch.setattr(assist, "url_for", lambda c, p: srv.url + "/v1beta")
+        assert assist.list_models(cfg) == [("gemini-4-argon", "Gemini 4 Argon")]
+    finally:
+        srv.close()
+    assert srv.seen["path"].startswith("/v1beta/models?") and srv.seen["headers"]["x-goog-api-key"] == "KEY"
+
+
+def test_ollama_lists_what_is_pulled():
+    srv = _Server(200, {"models": [{"name": "gemma3:latest"}, {"name": "qwen2.5vl"}]})
+    try:
+        got = assist.list_models({"assist": {"provider": "ollama", "urls": {"ollama": srv.url}}})
+    finally:
+        srv.close()
+    assert [m for m, _n in got] == ["gemma3:latest", "qwen2.5vl"] and srv.seen["path"] == "/api/tags"
+
+
+def test_listing_errors_are_short(monkeypatch):
+    srv = _Server(401, {"error": {"message": "invalid x-api-key"}})
+    try:
+        cfg = _with_key(monkeypatch, {"assist": {"provider": "anthropic", "urls": {"anthropic": srv.url}}},
+                        "anthropic")
+        with pytest.raises(assist.AssistError, match="refused the API key"):
+            assist.list_models(cfg)
+    finally:
+        srv.close()
+
+
+@pytest.mark.parametrize("pid,match", [("anthropic", "account's limit"), ("groq", "free limit")])
+def test_rate_limits_read_right_for_paid_and_free(monkeypatch, pid, match):
+    srv = _Server(429, {"error": {"message": "slow down"}})
+    try:
+        cfg = _with_key(monkeypatch, {"assist": {"provider": pid, "urls": {pid: srv.url}}}, pid)
+        with pytest.raises(assist.AssistError, match=match):
+            assist.solve(JPEG, cfg)
     finally:
         srv.close()
 
