@@ -1,6 +1,18 @@
 # Changelog
 
-## [Unreleased] — Grip to turn
+## [1.6.0] — Automatic updates and grip to turn
+
+### New
+- **Gesture Rotary updates itself.** It checks GitHub for a newer release a minute after it starts and every six
+  hours after that. A new version downloads in the background, is checked against the release's checksums, and
+  installs when the rotary isn't in use: the app restarts into it with your settings, and the notch says
+  *Updated to Gesture Rotary …*.
+  - Windows: the Setup.exe install upgrades silently in place; the portable folder is replaced.
+  - macOS: the app in Applications is replaced. Linux: `install.sh`'s copy is replaced.
+  - If anything goes wrong, the old version stays and starts again.
+  - Versions before 1.6.0 can't update themselves: download 1.6.0 once and later versions arrive by themselves.
+- *General → Updates*: turn *Update automatically* off, or *Check now* to update right away.
+- A 360° gauge around the main rotary shows how far it has turned since it opened (not on Quick nav rings).
 
 ### Changed
 - **Turn the rotary like a real knob.** Close your hand into a fist and tilt it: the ring follows with a firm
@@ -10,9 +22,6 @@
 - **Point to launch.** From the fist, stick out your index finger to open the selected item. Letting go no longer
   launches.
 - The ring snaps to each item faster.
-
-### New
-- A 360° gauge around the main rotary shows how far it has turned since it opened (not on Quick nav rings).
 
 ## [1.5.1] — MIT License
 

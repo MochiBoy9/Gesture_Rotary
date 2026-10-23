@@ -25,6 +25,13 @@ The window stays on the taskbar or Dock. Closing it minimises it, and there's al
 Launching the app again brings the window forward. *General → Uninstall* removes it cleanly, as does
 *Apps → Installed apps* on Windows and `./install.sh --uninstall` on Linux.
 
+**Updates install themselves.** A few hours apart (and a minute after it starts), the app asks GitHub for the
+latest release. When there's a newer one it downloads the file for your system in the background, checks it
+against the release's `SHA256SUMS.txt`, and once the rotary isn't in use it restarts into the new version,
+keeping your settings. Turn it off, or check right away, under *General → Updates*. Only an installed copy
+updates itself (the Setup.exe install, the portable folder, the app in Applications, or `install.sh`'s copy);
+running from source, it just says a new version is out.
+
 ### On a Mac
 
 - **Camera**: macOS asks the first time. Video never leaves your Mac.
@@ -233,7 +240,12 @@ version). The tag has to match `__version__` on that branch, or the run stops be
 Typing the tag of an existing release rebuilds it and replaces its files. Pull requests that touch the packaging
 only build; download the files from the run's artifacts.
 
-The Mac app is signed ad hoc, so users right-click → Open the first time. To sign and notarise it instead, add these
+Installed copies pick the new release up by themselves (`rotary/update.py`): they only look at the latest
+published release, never a pre-release or a draft, so a `-beta` tag reaches nobody automatically.
+
+The Mac app is signed ad hoc, so users right-click → Open the first time. macOS also ties the Camera and
+Accessibility permissions to the signature, so after an automatic update an ad hoc–signed app may ask for them
+again; a Developer ID signature keeps them. To sign and notarise it instead, add these
 repository secrets:
 - `MACOS_SIGN_IDENTITY` (e.g. `Developer ID Application: Name (TEAMID)`)
 - `MACOS_CERTIFICATE_P12` (base64) and `MACOS_CERTIFICATE_PASSWORD`
