@@ -8,7 +8,9 @@ import os
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from ctypes import wintypes
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -18,11 +20,13 @@ from PySide6.QtGui import (QAction, QActionGroup, QColor, QGuiApplication, QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
-from . import DATA_DIR, MAC, T0, WIN, __version__, assist, integrations, system, update, winapi
-from .actions import (CONFIG_PATH, back_item, build_items, cleanup_scripts, execute, item_from, load_config,
+from . import DATA_DIR, LINUX, MAC, T0, WIN, __version__, assist, integrations, modes, system, update, winapi
+from .actions import (CONFIG_PATH, Item, back_item, build_items, cleanup_scripts, execute, item_from, load_config,
                       save_config)
 from .feedback import Sounds, Speaker
 from .live import LiveWatcher
+from .mouse import MouseTrigger
+from .volume import Volume
 from .gestures import GestureEngine, GestureSettings, HandednessTracker, HandFeatures, Phase, extract_features
 from .tracker import CameraStatus, TrackerThread, TrackResult
 from .ui.dial import DialWindow
@@ -58,6 +62,8 @@ def fullscreen_app_running() -> bool:
 MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x1, 0x2, 0x4, 0x8, 0x4000
 HOTKEYS = {"ctrl+alt+space": (MOD_CONTROL | MOD_ALT, 0x20), "ctrl+shift+space": (MOD_CONTROL | MOD_SHIFT, 0x20),
            "ctrl+alt+r": (MOD_CONTROL | MOD_ALT, 0x52), "win+alt+space": (MOD_WIN | MOD_ALT, 0x20)}
+VIDEO_TICKS = 120                  # a video ring is this many steps long: one full turn, start to end
+SLIDES_TINT, VIDEO_TINT = "#FF9F0A", "#FF375F"
 HOTKEY_LABELS = {"ctrl+alt+space": "Ctrl + Alt + Space", "ctrl+shift+space": "Ctrl + Shift + Space",
                  "ctrl+alt+r": "Ctrl + Alt + R", "win+alt+space": "Win + Alt + Space"}
 if MAC:
@@ -206,6 +212,8 @@ class RotaryApp(QObject):
     assist_done = Signal(object, str)      # screen assist: the Answer (or None), error
     update_done = Signal(object, object, str)  # update check: newer Release (or None), Staged (or None), error
     update_state = Signal(str)             # what General → Updates says
+    mode_data = Signal(int, str, object)   # slides / video ring: (token, what, data) from a background thread
+    volume_level = Signal(float)           # the volume slider set this level (-1: unknown)
 
     def __init__(self, app: QApplication, show_window: bool | None = None):
         super().__init__()
@@ -257,6 +265,30 @@ class RotaryApp(QObject):
         self._assist_hotkey_now = None
         self.keyboard_session = False      # opened from the keyboard or the notch: mouse + arrow keys work
         self._kb_fg = 0                    # the window that was in front when it opened
+        # slides / video rings: what's in front decides how the rotary opens
+        self.mode = "main"
+        self.mode_ctx = modes.Context()
+        self._mode_token = 0
+        self._mode_sel = 0                 # engine position the slides / video already follow
+        self._main_sel = 0                 # where the item ring was, to go back to it
+        self._mode_moved = 0.0             # last time the user turned a mode ring
+        self._mode_n = 1
+        self._slides: tuple[int, int] | None = None   # (current, count) once the app has said
+        self._np = None                    # the video: NowPlaying from the media controls
+        self._np_read = 0.0
+        self._seek_to: float | None = None
+        self._mode_exec = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mode")
+        self.media = modes.MediaLink()
+        self.mode_data.connect(self._on_mode_data)
+        self._seek_timer = QTimer(self)
+        self._seek_timer.setSingleShot(True)
+        self._seek_timer.setInterval(160)
+        self._seek_timer.timeout.connect(self._flush_seek)
+        self.volume = Volume(self.volume_level.emit)
+        self.volume_level.connect(self._on_volume_level)
+        self._was_sliding = False
+        self.mouse_trigger = MouseTrigger(self)
+        self.mouse_trigger.event.connect(self._on_mouse_trigger)
 
         gen = self.cfg.get("general", {})
         self.camera_on = bool(gen.get("camera", True))
@@ -268,7 +300,7 @@ class RotaryApp(QObject):
         self._last_hand_t = 0.0
         self._last_dbg = 0.0
         self._cam_lost_t = time.monotonic()
-        self._flash: tuple[str, str, str, float] | None = None  # text, kind, accent, until
+        self._flash: tuple[str, str, str, float, float | None] | None = None  # text, kind, accent, until, progress
         self._calib: list[float] | None = None
         self._calib_until = 0.0
 
@@ -344,6 +376,7 @@ class RotaryApp(QObject):
         else:
             self.window.showMinimized()   # lives on the taskbar
         QTimer.singleShot(2500, self.dial.prewarm)
+        QTimer.singleShot(3000, self.media.warm)            # the video ring asks the media controls
         log.info("ready in %.0f ms (camera %s)", (time.perf_counter() - T0) * 1000, "on" if self.camera_on else "off")
 
     # ------------------------------------------------------------ window / tray
@@ -459,13 +492,15 @@ class RotaryApp(QObject):
     def apply_config(self, save: bool = True) -> None:
         """Apply self.cfg (edited in the window) right away; save shortly after."""
         self.items = build_items(self.cfg)
-        if not self.levels:
+        in_mode = self.mode != "main"            # a slides / video ring keeps its own count and settings
+        if not self.levels and not in_mode:
             self.level_items = self.items
             if self.engine.n != len(self.items):
                 self.engine.set_item_count(len(self.items))
             self.dial.set_items(self.items)
         self.settings = GestureSettings.from_dict(self.cfg.get("gestures"))
-        self.engine.s = self.settings
+        if not in_mode:
+            self.engine.s = self.settings
         ap = self.cfg.get("appearance", {})
         self.dial.set_dial_size(int(ap.get("dial_size", 600)))
         self.dial.live_glass = bool(ap.get("live_glass", False))
@@ -488,6 +523,7 @@ class RotaryApp(QObject):
         self.notch.set_options(island)
         self.live.configure(island)
         self.notch.set_hotkey(HOTKEY_LABELS.get(gen.get("hotkey", "ctrl+alt+space"), ""))
+        self.mouse_trigger.configure(gen.get("mouse_button", "middle"))
         self._register_hotkey()
         self._update_notch()
         self._update_pill()
@@ -558,7 +594,21 @@ class RotaryApp(QObject):
             self.keyboard_session = False
             self.dial.painter_.keyboard = False
             self._nav_keys(False)
+            self.mouse_trigger.set_active(False)
         self.notch.set_active(False)
+
+    def _dial_circle(self) -> tuple[float, float, float]:
+        """Where the rotary is, in the mouse hook's coordinates (Windows: physical pixels)."""
+        d = self.dial
+        radius = d.painter_.D / 2 + 6
+        if WIN:
+            r = wintypes.RECT()
+            if winapi.user32.GetWindowRect(wintypes.HWND(int(d.winId())), ctypes.byref(r)):
+                k = (r.right - r.left) / max(1, d.width())
+                return (r.left + r.right) / 2, (r.top + r.bottom) / 2, radius * k
+        g = d.geometry()
+        k = d.devicePixelRatioF() if LINUX else 1.0
+        return g.center().x() * k, g.center().y() * k, radius * k
 
     def open_manual(self) -> None:
         """Open the rotary for the mouse and keyboard (shortcut, notch, tray, window button)."""
@@ -574,6 +624,9 @@ class RotaryApp(QObject):
         else:
             self.keyboard_session = False
         self._handle(ev)
+        if self.keyboard_session and self.dial.isVisible():
+            # Clicks and scrolls outside the rotary stop here instead of reaching the app underneath.
+            self.mouse_trigger.set_active(True, self._dial_circle())
 
     def _close_manual(self, reason: str) -> None:
         self._handle(self.engine.force_close(time.monotonic(), reason))
@@ -615,6 +668,20 @@ class RotaryApp(QObject):
         elif self.keyboard_session:
             self._handle(self.engine.key_step(steps, time.monotonic()))
             self.dial.set_state(self.engine.snapshot())
+
+    def _on_mouse_trigger(self, kind: str, n: int) -> None:
+        """The mouse button that opens the rotary, and the wheel / clicks while it's open (from mouse.py)."""
+        if kind in ("toggle", "open"):
+            if self.engine.phase == Phase.OPEN:
+                if kind == "toggle":
+                    self._close_manual("mouse")
+            elif self.engine.phase == Phase.IDLE:
+                self.open_manual()
+        elif kind == "close":
+            if self.engine.phase == Phase.OPEN:
+                self._close_manual("mouse")
+        elif kind in ("turn", "back"):
+            self._on_dial_mouse(kind, n)
 
     def _on_dial_mouse(self, kind: str, n: int) -> None:
         if self.engine.phase != Phase.OPEN:
@@ -927,6 +994,240 @@ class RotaryApp(QObject):
         self.engine.enter_level(len(new), time.monotonic(), selected=min(1, len(new) - 1))
         self.dial.set_level(new, self.crumb, self.engine.snapshot())
 
+    # ------------------------------------------------------------ slides / video rings
+    def _modes_cfg(self) -> dict:
+        return {"slides": True, "video": True, **(self.cfg.get("modes") or {})}
+
+    def _detect_context(self) -> modes.Context:
+        mc = self._modes_cfg()
+        if not (mc["slides"] or mc["video"]):
+            return modes.Context()
+        exe, title = modes.foreground()
+        ctx = modes.classify(exe, title, slides=bool(mc["slides"]), video=bool(mc["video"]))
+        if ctx.kind:
+            log.info("%s in front (%s): %s ring", ctx.app, ctx.exe, ctx.kind)
+        return ctx
+
+    def _watch_context(self) -> bool:
+        """Open as a slides / video ring if that's what's in front. True if it stays the item ring (for now).
+        On Windows this is instant; elsewhere asking can take a moment, so the ring switches when it knows."""
+        if WIN:
+            ctx = self._detect_context()
+            if ctx.kind:
+                self._enter_mode(ctx)
+                return False
+            return True
+        token = self._mode_token
+        self._mode_exec.submit(lambda: self.mode_data.emit(token, "context", self._detect_context()))
+        return True
+
+    def _mode_item(self, name: str, tint: str) -> Item:
+        return Item(name, "", "", tint, {"type": "mode"})
+
+    def _enter_mode(self, ctx: modes.Context) -> None:
+        self._main_sel = self.engine.selected
+        self.mode_ctx = ctx
+        self.mode = ctx.kind
+        self._mode_token += 1
+        token = self._mode_token
+        if ctx.kind == "slides":
+            self._slides = None
+            self._setup_slides()
+            self._say(f"{ctx.app} slides")
+            self._mode_exec.submit(lambda: self.mode_data.emit(token, "slides", modes.slide_info(ctx)))
+        else:
+            self._np = None
+            self._setup_video()
+            self._say(f"{ctx.app} video")
+            self._read_media()
+
+    def _apply_mode_settings(self, **changes) -> None:
+        self.engine.s = replace(self.settings, dwell_seconds=0.0, **changes)
+
+    def _setup_slides(self) -> None:
+        """A cut between every two slides (or plain steps while the count is unknown), with a firm click per
+        slide so a small wobble never changes slide."""
+        s = self.settings
+        self._apply_mode_settings(detent_force=s.detent_force + 0.32, detent_hysteresis=s.detent_hysteresis + 0.22,
+                                  scroll_speed=s.scroll_speed * 0.55)
+        known = self._slides is not None
+        n = self._slides[1] if known else 12
+        sel = self._slides[0] - 1 if known else 0
+        self._mode_n = n
+        self.engine.enter_level(n, time.monotonic(), selected=sel, limit=(0, n - 1) if known else None,
+                                fixed_step=26.0)
+        self._mode_sel = self.engine.sel_raw
+        self.dial.set_mode("slides", [self._mode_item(self.mode_ctx.app, SLIDES_TINT)] * n, self._slides_info(),
+                           self.engine.snapshot())
+
+    def _slides_info(self) -> dict:
+        app = self.mode_ctx.app
+        if self._slides is not None:
+            return {"known": True, "title": f"Slide {self.engine.sel_raw + 1}", "sub": f"of {self._slides[1]} · {app}",
+                    "top": "Slides"}
+        moved = self.engine.sel_raw
+        return {"known": False, "title": f"{moved:+d}" if moved else "Slides",
+                "sub": f"{app} · next / previous", "top": "Slides"}
+
+    def _setup_video(self) -> None:
+        """A full turn is the whole video. Without its length (no media controls for it), each click jumps
+        the player's own seek step."""
+        s = self.settings
+        np_ = self._np
+        dur = np_.duration if np_ is not None else 0.0
+        now = time.monotonic()
+        if dur > 0:
+            self._apply_mode_settings(detent_force=0.0, detent_hysteresis=0.02, scroll_speed=s.scroll_speed * 2.5)
+            n = VIDEO_TICKS
+            pos = np_.position_now() / dur * n
+            self.engine.enter_level(n, now, selected=int(round(pos)), limit=(0, n))
+            self.engine.set_position(pos, now)
+        else:
+            self._apply_mode_settings(detent_force=0.1, scroll_speed=s.scroll_speed * 0.8)
+            n = 24
+            self.engine.enter_level(n, now, selected=0, fixed_step=20.0)
+        self._mode_n = n
+        self._mode_sel = self.engine.sel_raw
+        self.dial.set_mode("video", [self._mode_item(self.mode_ctx.app, VIDEO_TINT)] * n, self._video_info(),
+                           self.engine.snapshot())
+
+    def _video_info(self) -> dict:
+        app = self.mode_ctx.app
+        np_ = self._np
+        if np_ is not None and np_.duration > 0:
+            return {"duration": np_.duration, "sub": f"of {modes.fmt_time(np_.duration)}",
+                    "top": np_.title or app}
+        _f, _b, secs = modes.seek_keys(app)
+        moved = self.engine.sel_raw * secs
+        title = ("+" if moved > 0 else "−") + modes.fmt_time(abs(moved)) if moved else "Video"
+        return {"duration": 0, "title": title, "sub": f"{app} · {secs:g} s per click", "top": app}
+
+    def _read_media(self) -> None:
+        token = self._mode_token
+        self._np_read = time.monotonic()
+        fut = self.media.read()
+        fut.add_done_callback(lambda f: self.mode_data.emit(token, "video", f.result()))
+
+    def _on_mode_data(self, token: int, what: str, data) -> None:
+        if token != self._mode_token or self.engine.phase != Phase.OPEN:
+            return
+        if what == "context":
+            if data.kind and self.mode == "main" and not self.levels and not self.engine.snapshot().interacted:
+                self._enter_mode(data)
+        elif what == "slides" and self.mode == "slides" and data:
+            self._slides = data
+            self._setup_slides()
+        elif what == "video" and self.mode == "video":
+            ok = data is not None and data.duration > 0 and modes.media_matches(self.mode_ctx, data.app,
+                                                                                 data.app_name)
+            had = self._np is not None
+            if ok:
+                self._np = data
+                if not had:
+                    self._setup_video()              # now we know its length: the ring becomes the timeline
+                self._follow_video()
+            elif not had and self.mode_ctx.browser and self.media.available:
+                log.info("no video playing in %s: the item ring", self.mode_ctx.app)
+                self._leave_mode(quiet=True)          # a site's home page, not a video
+        elif what == "seeked" and self.mode == "video":
+            sec, ok = data
+            if not ok:                                # the player won't take a position: its seek keys then
+                np_ = self._np
+                cur = np_.position_now() if np_ is not None else 0.0
+                _f, _b, step = modes.seek_keys(self.mode_ctx.app)
+                self._press_mode_keys(lambda: modes.press_seek(self.mode_ctx.app, int(round((sec - cur) / step))))
+            if self._np is not None:
+                self._np.position, self._np.at = sec, time.monotonic()
+
+    def _follow_video(self) -> None:
+        """The dial turns with the video as it plays, and holds still while it's being turned."""
+        if self.mode != "video" or self._np is None or self._np.duration <= 0:
+            return
+        snap = self.engine.snapshot()
+        busy = (time.monotonic() - self._mode_moved < 1.5 or self._seek_to is not None or snap.gripping
+                or snap.scrolling or (self.dial._drag or {}).get("dragging"))
+        if busy:
+            return
+        self.engine.set_position(self._np.position_now() / self._np.duration * self._mode_n, time.monotonic())
+        self._mode_sel = self.engine.sel_raw
+        self.dial.set_state(self.engine.snapshot())
+
+    def _mode_select(self) -> None:
+        delta = self.engine.sel_raw - self._mode_sel
+        self._mode_sel = self.engine.sel_raw
+        self._mode_moved = time.monotonic()
+        if not delta:
+            return
+        if self.mode == "slides":
+            self._mode_exec.submit(modes.step_slides, delta)
+            self.dial.painter_.info = self._slides_info()
+        elif self._np is not None and self._np.duration > 0:
+            self._seek_to = self.engine.sel_raw / self._mode_n * self._np.duration
+            self._seek_timer.start()
+        else:
+            app = self.mode_ctx.app
+            self._press_mode_keys(lambda: modes.press_seek(app, delta))
+            self.dial.painter_.info = self._video_info()
+
+    def _press_mode_keys(self, fn) -> None:
+        """Arrow keys for a player: our own ← → shortcuts step aside meanwhile, or they'd catch them."""
+        nav = self.keyboard_session
+        if nav:
+            self._nav_keys(False)
+        try:
+            fn()
+        except Exception as e:
+            log.warning("couldn't press the player's keys: %s", e)
+        finally:
+            if nav and self.keyboard_session:
+                self._nav_keys(True)
+
+    def _flush_seek(self) -> None:
+        sec, self._seek_to = self._seek_to, None
+        self._seek_timer.stop()
+        if sec is None or self.mode != "video":
+            return
+        token = self._mode_token
+        self._mode_moved = time.monotonic()
+        fut = self.media.seek(sec)
+        fut.add_done_callback(lambda f: self.mode_data.emit(token, "seeked", (sec, bool(f.result()))))
+
+    def _leave_mode(self, quiet: bool = False) -> None:
+        """From a slides / video ring to the usual ring of items."""
+        if self.mode == "main":
+            return
+        self._flush_seek()
+        self.mode = "main"
+        self._mode_token += 1
+        self.engine.s = self.settings
+        self.engine.enter_level(len(self.level_items), time.monotonic(), selected=self._main_sel)
+        self.dial.set_mode("main", self.level_items, {}, self.engine.snapshot())
+        if not quiet:
+            self.sounds.play("open")
+            self._say("Rotary. " + self.level_items[self.engine.selected % len(self.level_items)].name)
+
+    def _reset_mode(self) -> None:
+        if self.mode == "main" and self.engine.limit is None and self.engine.fixed_step is None:
+            return
+        self._seek_timer.stop()
+        self._seek_to = None
+        self.mode = "main"
+        self._mode_token += 1
+        self.engine.s = self.settings
+        self.engine.limit = None
+        self.engine.fixed_step = None
+        self.engine.set_item_count(len(self.level_items))
+        self.engine.sel_raw = self._main_sel % max(1, len(self.level_items))
+        self.engine.position = float(self.engine.sel_raw)
+
+    def _on_volume_level(self, level: float) -> None:
+        self.sounds.play("tick")
+        if self.dial.isVisible():
+            self.dial.painter_.show_volume(level)
+        else:
+            self._flash_msg(f"Volume {level * 100:.0f}%" if level >= 0 else "Volume", "dot", BLUE, 1.6,
+                            progress=level if level >= 0 else None)
+
     # ------------------------------------------------------------ tracking
     def on_result(self, res: TrackResult) -> None:
         self._last_result_t = time.monotonic()
@@ -950,6 +1251,9 @@ class RotaryApp(QObject):
             self._prev_center = None
         self._handle(self.engine.update(f, res.t))
         snap = self.engine.snapshot()
+        if snap.sliding and not self._was_sliding:
+            self.volume.forget()                 # read the level afresh: something else may have changed it
+        self._was_sliding = snap.sliding
         if f is not None and log.isEnabledFor(logging.DEBUG) and res.t - self._last_dbg > 0.5:
             self._last_dbg = res.t
             log.debug("hand %s(%.2f) facing=%+.2f grip=%.2f curls=%s pinch=%.2f roll=%+.0f fs=%.2f face=%s "
@@ -975,6 +1279,10 @@ class RotaryApp(QObject):
             self._update_pill(snap)
         if self._calib is not None and now >= self._calib_until:
             self._finish_calibration()
+        if self.mode == "video" and self.engine.phase == Phase.OPEN and self._np is not None:
+            if now - self._np_read > 1.0:
+                self._read_media()               # where the video really is (it may have been paused)
+            self._follow_video()
         self.tracker.want_preview = self.window.wants_frames()
         # A mouse / keyboard session ends when you click into another window.
         if self.keyboard_session and self.engine.phase == Phase.OPEN and sys.platform == "win32":
@@ -1041,15 +1349,25 @@ class RotaryApp(QObject):
             log.debug("event %s %s", name, payload)
             if name == "open":
                 self._reset_levels()
+                self._reset_mode()
                 self.dial.set_items(self.level_items)
                 self.dial.painter_.crumb = ""
+                self.dial.painter_.mode = "main"
                 self.dial.painter_.keyboard = self.keyboard_session
                 self.dial.open(self.engine.snapshot(), interactive=self.keyboard_session)
                 self.sounds.play("open")
-                self._say("Rotary. " + self.level_items[self.engine.selected % len(self.level_items)].name)
+                if self._watch_context():
+                    self._say("Rotary. " + self.level_items[self.engine.selected % len(self.level_items)].name)
             elif name == "select":
                 self.sounds.play("tick")
-                self._speak_timer.start()
+                if self.mode != "main":
+                    self._mode_select()
+                else:
+                    self._speak_timer.start()
+            elif name == "volume":
+                self.volume.change(int(payload))
+            elif name == "execute" and self.mode != "main":
+                self._leave_mode()           # a click / pinch / point on a slides or video ring: the items
             elif name == "execute":
                 item = self.level_items[payload % len(self.level_items)]
                 if item.kind == "quicknav":
@@ -1070,6 +1388,8 @@ class RotaryApp(QObject):
             elif name in ("close", "closed"):
                 if name == "close":
                     self.dial.close_dial()
+                self._flush_seek()
+                self._reset_mode()
                 self._reset_levels()
                 self._end_keyboard()
 
@@ -1120,8 +1440,9 @@ class RotaryApp(QObject):
         log.info("calibrated flip_handedness=%s from %d samples", flip, len(good))
 
     # ------------------------------------------------------------ pill
-    def _flash_msg(self, text: str, kind: str, accent: str, seconds: float = 1.8) -> None:
-        self._flash = (text, kind, accent, time.monotonic() + seconds)
+    def _flash_msg(self, text: str, kind: str, accent: str, seconds: float = 1.8,
+                   progress: float | None = None) -> None:
+        self._flash = (text, kind, accent, time.monotonic() + seconds, progress)
         self._update_pill()
 
     def _update_pill(self, snap=None) -> None:
@@ -1135,8 +1456,10 @@ class RotaryApp(QObject):
         if st.state not in ("none", "error"):
             self._cam_lost_t = now
         if self._flash and now < self._flash[3]:
-            text, kind, accent, _ = self._flash
+            text, kind, accent, _, progress = self._flash
             args = dict(text=text, kind=kind, accent=accent)
+            if progress is not None:
+                args["progress"] = progress
         elif self._calib is not None:
             prog = 1 - max(0.0, self._calib_until - now) / 2.5
             args = dict(text="Hold your palm toward the camera…", accent=BLUE, progress=prog)
@@ -1207,6 +1530,7 @@ class RotaryApp(QObject):
         self.hotkeys.unregister(HK_TOGGLE)
         self.hotkeys.unregister(HK_ASSIST)
         self._nav_keys(False)
+        self.mouse_trigger.stop()
         self._shutdown()
         self.tray.hide()
         self.window.close()
