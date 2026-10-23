@@ -1,8 +1,21 @@
 # Changelog
 
-## [Unreleased]
+## [1.9.0] — Liquid glass
 
 ### New
+- **A redesigned Gesture Rotary window.** Liquid glass throughout: the sidebar and every card are panes of
+  glass over a softly blurred copy of your desktop wallpaper (or a colourful *Aurora*, or *Plain*, in
+  *General › Appearance › Window background*).
+- **Home page.** Whether the rotary is ready, a big *Open the rotary* button, every way you can open it, the
+  switches people reach for most, and a tile for each section.
+- **Search settings.** Type in the sidebar's search field (Ctrl+F, or ⌘F on a Mac) to find any setting; pick a
+  result and the window jumps to it and highlights it. Ctrl+1 to Ctrl+9 open the sections in order, and the
+  sidebar groups them under *Rotary*, *Features* and *System*.
+- **Fonts.** The app now ships with Inter, an open font drawn in the same spirit as Apple's San Francisco, and
+  uses it for the window, the rotary, the notch and status messages (macOS keeps its own San Francisco). Pick
+  any other installed font in *General › Appearance › Font*.
+- **A new app icon:** the rotary itself, a glass ring of coloured items turning to the one under the selection
+  lens, so it says what the app does at a glance.
 - **Volume from the mouse and keyboard.** When the rotary opens from the notch, the keyboard shortcut or the
   mouse button, a liquid-glass volume button sits beside it, ringed by the current level. Click it (or press **+**
   or **−**) and the ring becomes the volume: it turns itself round to where the volume already is, with the level

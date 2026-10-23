@@ -15,8 +15,8 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QObject, QFileSystemWatcher, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import (QAction, QActionGroup, QColor, QGuiApplication, QIcon, QLinearGradient, QPainter, QPen,
-                           QPixmap, QRadialGradient)
+from PySide6.QtGui import (QAction, QActionGroup, QBrush, QColor, QConicalGradient, QFont, QFontMetricsF,
+                           QGuiApplication, QIcon, QLinearGradient, QPainter, QPen, QPixmap, QRadialGradient)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
@@ -31,7 +31,7 @@ from .weather import WeatherWatcher
 from .gestures import GestureEngine, GestureSettings, HandednessTracker, HandFeatures, Phase, extract_features
 from .tracker import CameraStatus, TrackerThread, TrackResult
 from .ui.dial import DialWindow
-from .ui.glass import load_fonts
+from .ui.glass import TEXT, family, font, load_fonts, set_text_font
 from .ui.notch import NotchWindow
 from .ui.pill import AMBER, BLUE, GRAY, GREEN, RED, PillWindow
 
@@ -130,30 +130,84 @@ class HotkeyWindow(QWidget):
 
 
 # --------------------------------------------------------------------------- icons
+# The ring of items on the app icon, clockwise from 12 o'clock (that one is the selected item).
+ICON_DOTS = ["#0A84FF", "#30D158", "#FFD60A", "#FF9F0A", "#FF375F", "#BF5AF2", "#5E5CE6", "#64D2FF"]
+
+
 def _icon_pixmap(px: int, active: bool = True, tile: bool = True) -> QPixmap:
-    """App icon: a glass dial with the selection lens at 12 o'clock."""
+    """App icon: the rotary itself: a glass ring of coloured items turning to the one at the top, under
+    the selection lens, around the glass hub that names it. The tray version is a plain ring with the
+    lens, which still reads at 16 px."""
     pm = QPixmap(px, px)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     s = px / 64.0
     if tile:
+        body = QRectF(2 * s, 2 * s, 60 * s, 60 * s)
         g = QLinearGradient(0, 0, 0, px)
-        g.setColorAt(0, QColor("#2a2d3a"))
-        g.setColorAt(1, QColor("#0f1016"))
+        g.setColorAt(0, QColor("#24306b"))
+        g.setColorAt(1, QColor("#0c0e1c"))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(g)
-        p.drawRoundedRect(QRectF(2 * s, 2 * s, 60 * s, 60 * s), 14 * s, 14 * s)
-        glow = QRadialGradient(QPointF(32 * s, 34 * s), 30 * s)
-        glow.setColorAt(0, QColor(10, 132, 255, 90))
-        glow.setColorAt(1, QColor(10, 132, 255, 0))
+        p.drawRoundedRect(body, 14 * s, 14 * s)
+        glow = QRadialGradient(QPointF(32 * s, 30 * s), 30 * s)
+        glow.setColorAt(0, QColor(94, 92, 230, 120))
+        glow.setColorAt(1, QColor(94, 92, 230, 0))
         p.setBrush(glow)
-        p.drawEllipse(QPointF(32 * s, 34 * s), 30 * s, 30 * s)
+        p.drawRoundedRect(body, 14 * s, 14 * s)
+        c, r = QPointF(32 * s, 33 * s), 20.5 * s
+        # The glass track the items sit on.
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor(255, 255, 255, 34), 9.5 * s))
+        p.drawEllipse(c, r, r)
+        p.setPen(QPen(QColor(255, 255, 255, 70), 0.8 * s))
+        p.drawEllipse(c, r + 4.75 * s, r + 4.75 * s)
+        p.drawEllipse(c, r - 4.75 * s, r - 4.75 * s)
+        # A trail behind the selection: the ring has just turned to it.
+        trail = QConicalGradient(c, 90)
+        trail.setColorAt(0.0, QColor(10, 132, 255, 230))
+        trail.setColorAt(0.2, QColor(10, 132, 255, 0))
+        trail.setColorAt(1.0, QColor(10, 132, 255, 0))
+        pen = QPen(QBrush(trail), 3.2 * s)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawArc(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r), 90 * 16, 70 * 16)
+        p.setPen(Qt.PenStyle.NoPen)
+        n = len(ICON_DOTS)
+        for i, col in enumerate(ICON_DOTS[1:], 1):
+            a = math.radians(-90 + i * 360 / n)
+            p.setBrush(QColor(col) if active else QColor("#8E8E93"))
+            p.drawEllipse(QPointF(c.x() + r * math.cos(a), c.y() + r * math.sin(a)), 3.3 * s, 3.3 * s)
+        # The selected item at 12 o'clock, under a lens.
+        top = QPointF(c.x(), c.y() - r)
+        p.setBrush(QColor(0, 0, 0, 70))
+        p.drawEllipse(top + QPointF(0, 1.2 * s), 6.8 * s, 6.8 * s)
+        p.setBrush(QColor("white"))
+        p.drawEllipse(top, 6.8 * s, 6.8 * s)
+        p.setBrush(QColor(ICON_DOTS[0]) if active else QColor("#8E8E93"))
+        p.drawEllipse(top, 5.2 * s, 5.2 * s)
+        # The centre, as on the real rotary: a glass hub holding the chosen item's name.
+        p.setBrush(QColor(0, 0, 0, 70))
+        p.drawEllipse(c + QPointF(0, 1.0 * s), 11.5 * s, 11.5 * s)
+        hub = QLinearGradient(0, c.y() - 11.5 * s, 0, c.y() + 11.5 * s)
+        hub.setColorAt(0, QColor(255, 255, 255, 70))
+        hub.setColorAt(1, QColor(255, 255, 255, 22))
+        p.setBrush(hub)
+        p.setPen(QPen(QColor(255, 255, 255, 110), 0.8 * s))
+        p.drawEllipse(c, 11.5 * s, 11.5 * s)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("white"))
+        p.drawRoundedRect(QRectF(c.x() - 6 * s, c.y() - 3.4 * s, 12 * s, 3.2 * s), 1.6 * s, 1.6 * s)
+        p.setBrush(QColor(255, 255, 255, 140))
+        p.drawRoundedRect(QRectF(c.x() - 4 * s, c.y() + 1.4 * s, 8 * s, 2.2 * s), 1.1 * s, 1.1 * s)
+        p.end()
+        return pm
     c = QPointF(32 * s, 33 * s)
     alpha = 235 if active else 120
-    p.setPen(QPen(QColor(255, 255, 255, alpha), (5.0 if tile else 6.0) * s))
+    p.setPen(QPen(QColor(255, 255, 255, alpha), 6.0 * s))
     p.setBrush(Qt.BrushStyle.NoBrush)
-    r = (19 if tile else 24) * s
+    r = 24 * s
     p.drawEllipse(c, r, r)
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(QColor("#0A84FF") if active else QColor("#8E8E93"))
@@ -229,6 +283,8 @@ class RotaryApp(QObject):
         self.app_icon = brand_icon()
         app.setWindowIcon(self.app_icon)
         self.cfg = load_config()
+        self._font_choice = None
+        self.apply_font()
         install_changed = system.refresh_install(self.cfg)
         self.items = build_items(self.cfg)       # the top-level ring
         self.level_items = self.items            # what the ring shows right now
@@ -476,6 +532,31 @@ class RotaryApp(QObject):
             self._no_cam_since = time.monotonic() - 60
         log.info("camera gestures %s", "on" if on else "off")
 
+    def apply_font(self) -> None:
+        """Use the font picked in General → Appearance (default: Inter, or San Francisco on macOS) for the
+        window, the rotary, the notch and the status pill."""
+        choice = str(self.cfg.get("appearance", {}).get("font", "") or "")
+        if choice == self._font_choice:
+            return
+        first = self._font_choice is None
+        self._font_choice = choice
+        set_text_font(choice)
+        f = QApplication.font()
+        f.setFamily(family())
+        QApplication.setFont(f)
+        if first:
+            return                                       # nothing has drawn any text yet
+        for cache in (getattr(self.dial.painter_, "_fonts", None), getattr(self.notch, "_fonts", None)):
+            if isinstance(cache, dict):
+                cache.clear()
+        if hasattr(self.pill, "_tf"):
+            self.pill._tf = font(TEXT, 13.5, QFont.Weight.DemiBold)
+            self.pill._fm = QFontMetricsF(self.pill._tf)
+        self.dial.update()
+        self.notch.update()
+        if getattr(self, "window", None) is not None:
+            self.window.restyle()
+
     def manual_open(self) -> None:
         self.open_manual()
 
@@ -511,6 +592,7 @@ class RotaryApp(QObject):
         if not in_mode:
             self.engine.s = self.settings
         ap = self.cfg.get("appearance", {})
+        self.apply_font()
         self.dial.set_dial_size(int(ap.get("dial_size", 540)))
         self.dial.live_glass = bool(ap.get("live_glass", False))
         self.dial.painter_.set_accessibility(ap.get("text_scale", 1.0), ap.get("high_contrast", False),

@@ -49,35 +49,91 @@ def ease_out_cubic(x: float) -> float:
 
 # --------------------------------------------------------------------------- fonts
 _families: set[str] | None = None
+BUNDLED_TEXT = "Inter Variable"     # assets/InterVariable.ttf (SIL OFL 1.1): closest open match to SF Pro
+SYSTEM_UI = "<system>"              # stands for the desktop's own UI font (San Francisco on macOS)
+SYSTEM_TEXT = {"darwin": ["SF Pro Text", SYSTEM_UI],
+               "win32": ["Segoe UI Variable Text", "Segoe UI"]}.get(sys.platform, [SYSTEM_UI])
+SYSTEM_DISPLAY = {"darwin": ["SF Pro Display", SYSTEM_UI],
+                  "win32": ["Segoe UI Variable Display", "Segoe UI"]}.get(sys.platform, [SYSTEM_UI])
+FALLBACK = ["Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", "DejaVu Sans"]
 
 
 def load_fonts() -> None:
-    """Without Windows' Segoe Fluent Icons (macOS, Linux), use the bundled Rotary Icons: the same glyphs
-    at the same code points, drawn from Fluent UI System Icons."""
+    """Load the bundled fonts: Inter (the app's text face, unless you pick another in General ›
+    Appearance) and, without Windows' Segoe Fluent Icons (macOS, Linux), Rotary Icons: the same glyphs at
+    the same code points, drawn from Fluent UI System Icons."""
     global _families
+    from .. import ROOT
     _families = set(QFontDatabase.families())
+    wanted = [("InterVariable.ttf", BUNDLED_TEXT)]
     if not {"Segoe Fluent Icons", "Segoe MDL2 Assets", "Rotary Icons"} & _families:
-        from .. import ROOT
-        path = ROOT / "assets" / "rotary-icons.ttf"
-        if path.exists() and QFontDatabase.addApplicationFont(str(path)) >= 0:
-            _families = set(QFontDatabase.families())
+        wanted.append(("rotary-icons.ttf", "Rotary Icons"))
+    for file, family in wanted:
+        path = ROOT / "assets" / file
+        if family not in _families and path.exists():
+            QFontDatabase.addApplicationFont(str(path))
+    _families = set(QFontDatabase.families())
 
 
 def font(families: list[str], px: float, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
-    if _families is None:
-        load_fonts()
-    fam = next((f for f in families if f in _families), None) or QFontDatabase.systemFont(
-        QFontDatabase.SystemFont.GeneralFont).family()
+    fam = family(families)
     f = QFont(fam)
     f.setPixelSize(max(1, int(round(px))))
     f.setWeight(weight)
     f.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
+    if fam == BUNDLED_TEXT and families is DISPLAY and px >= 20 and hasattr(f, "setVariableAxis"):
+        f.setVariableAxis(QFont.Tag("opsz"), 32.0)     # Inter's display cut: tighter, like SF Pro Display
     return f
 
 
-DISPLAY = ["SF Pro Display", "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI"]
-TEXT = ["SF Pro Text", "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI"]
+# The text faces everything draws with. Edited in place by set_text_font(), so modules that imported
+# them (the rotary, the notch, the pill) follow a change of font without importing again.
+DISPLAY: list[str] = []
+TEXT: list[str] = []
 ICONS = ["Segoe Fluent Icons", "Segoe MDL2 Assets", "Rotary Icons"]
+
+
+def font_choices() -> list[tuple[str, str]]:
+    """(key, label) for the font picker: the two built-in looks, then every installed family."""
+    if _families is None:
+        load_fonts()
+    sys_name = {"darwin": "San Francisco", "win32": "Segoe UI"}.get(sys.platform, "System font")
+    out = [("", "Inter (default)" if sys.platform != "darwin" else "San Francisco (default)"),
+           ("system" if sys.platform != "darwin" else "inter", sys_name if sys.platform != "darwin" else "Inter")]
+    skip = {BUNDLED_TEXT, "Rotary Icons", *ICONS}
+    out += [(f, f) for f in sorted(_families or (), key=str.casefold)
+            if f not in skip and not f.startswith(".") and not QFontDatabase.isPrivateFamily(f)
+            and QFontDatabase.writingSystems(f).count(QFontDatabase.WritingSystem.Latin)]
+    return out
+
+
+def set_text_font(choice: str = "") -> None:
+    """Point TEXT / DISPLAY at the chosen family. "" is the default look: SF Pro on macOS (the system
+    font), Inter everywhere else. "inter" / "system" pick those; anything else is an installed family."""
+    mac = sys.platform == "darwin"
+    if choice == "system" or (choice == "" and mac):
+        text, display = SYSTEM_TEXT + [BUNDLED_TEXT], SYSTEM_DISPLAY + [BUNDLED_TEXT]
+    elif choice in ("", "inter"):
+        text = display = [BUNDLED_TEXT, "Inter"] + SYSTEM_TEXT
+    else:
+        text = display = [choice, BUNDLED_TEXT] + SYSTEM_TEXT
+    TEXT[:] = text + FALLBACK
+    DISPLAY[:] = display + FALLBACK
+
+
+def family(families: list[str] | None = None) -> str:
+    """The first of `families` (default: TEXT) that's installed: what a style sheet should name."""
+    if _families is None:
+        load_fonts()
+    for f in families or TEXT:
+        if f == SYSTEM_UI:
+            break
+        if f in _families:
+            return f
+    return QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont).family()
+
+
+set_text_font("")
 
 
 # --------------------------------------------------------------------------- backdrop
