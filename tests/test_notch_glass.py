@@ -77,14 +77,42 @@ def test_notch_grows_for_status_and_hover_then_rests():
     _settle(n)
     assert n.body_rect().width() > rest + 100
     n.set_status("", hidden=True)
-    n.hovered = True
-    n._retarget()
+    _settle(n)
+    rest = n.body_rect().width()
+    n.enterEvent(None)
+    _settle(n)
+    assert n.body_rect().width() == pytest.approx(rest, abs=1)     # a passing hover changes nothing
+    assert n._shown_text() == ""
+    n._show_hint()                                                  # …a longer one says what a click does
     _settle(n)
     assert n.body_rect().width() > rest
+    n.leaveEvent(None)
+    assert not n.hint_ready
     n.hovered = False
     n.set_peek(True)
     _settle(n)
     assert n.body_rect().height() < 8
+
+
+def test_notch_hover_never_says_rotary():
+    from rotary.live import LiveState, NowPlaying
+    from rotary.ui.notch import HOVER_HINT
+    n = NotchWindow()
+    n.enterEvent(None)
+    assert n._hover_label() == ""
+    n._show_hint()
+    assert n._hover_label() == HOVER_HINT == "Click to open wheel"
+    assert n._shown_text() == HOVER_HINT
+    # music (or a call, a timer) on the notch: the hover shows that instead, never the hint
+    n.set_live(LiveState(media=NowPlaying("a", "A", "Song", playing=True)))
+    assert n._hover_label() == "" and n._card_kind() == "media"
+    n.set_live(LiveState())
+    n.start_timer(60)
+    assert n._hover_label() == ""
+    n.cancel_timer()
+    n.set_status("Clip saved", "done", "#30D158")
+    assert n._shown_text() == "Clip saved"
+    n.leaveEvent(None)
 
 
 def test_notch_click_and_wheel():
@@ -139,6 +167,109 @@ def test_dial_ignores_the_mouse_when_opened_by_a_gesture():
     d._set_interactive(True)
     d.wheelEvent(ev)
     assert got == ["turn"]
+
+
+def _press(d, kind_name, pt, button=Qt.MouseButton.LeftButton):
+    ev = type("E", (), {"button": lambda self: button, "position": lambda self: pt})()
+    getattr(d, kind_name)(ev)
+
+
+def test_volume_button_beside_the_rotary():
+    from PySide6.QtGui import QImage, QPainter
+    d = DialWindow(build_items(DEFAULT_CONFIG), 600)
+    dp = d.painter_
+    dp.begin(EngineSnapshot(phase=Phase.OPEN, selected=0, position=0))
+    got = []
+    d.mouse.connect(lambda k, v: got.append((k, v)))
+    c, r = dp.volume_button()
+    pt = QPointF(d.width() / 2 + c.x(), d.height() / 2 + c.y())
+    assert d.hit(pt) == ("", 0)                         # opened by a gesture: no button
+    dp.keyboard = True
+    for _ in range(40):
+        dp.tick(1 / 60)
+    assert d.hit(pt) == ("volume", 0)
+    d._set_interactive(True)
+    _press(d, "mousePressEvent", pt)
+    _press(d, "mouseReleaseEvent", pt)
+    assert got == [("volume", 0)]
+    z = d.volume_zone()
+    assert z.contains(pt) and z.right() <= d.width() and z.bottom() <= d.height()
+    # as a volume ring: the level in the middle, the button lit
+    dp.volume_level = 0.4
+    dp.set_mode("volume", dp.items[:1] * 25, {"sub": "Volume", "top": "Volume"},
+                EngineSnapshot(phase=Phase.OPEN, selected=10, position=10))
+    for _ in range(40):
+        dp.tick(1 / 60)
+    img = QImage(d.width(), d.height(), QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(0)
+    p = QPainter(img)
+    dp.paint(p, d.width(), d.height())
+    p.end()
+    assert img.pixelColor(int(pt.x()), int(pt.y())).alpha() > 150
+    assert "change it" in dp.hint()
+
+
+def test_breadcrumb_is_a_back_button_from_the_mouse():
+    from PySide6.QtGui import QImage, QPainter
+    d = DialWindow(build_items(DEFAULT_CONFIG), 600)
+    dp = d.painter_
+    dp.keyboard = True
+    dp.set_level(dp.items[:4], "Steam", EngineSnapshot(phase=Phase.OPEN, selected=0, position=0))
+    for _ in range(60):
+        dp.tick(1 / 60)
+    img = QImage(d.width(), d.height(), QImage.Format.Format_ARGB32_Premultiplied)
+    p = QPainter(img)
+    dp.paint(p, d.width(), d.height())
+    p.end()
+    c = dp._crumb_rect.center()
+    pt = QPointF(d.width() / 2 + c.x(), d.height() / 2 + c.y())
+    assert d.hit(pt) == ("back", 0)
+    got = []
+    d.mouse.connect(lambda k, v: got.append(k))
+    d._set_interactive(True)
+    _press(d, "mousePressEvent", pt)
+    _press(d, "mouseReleaseEvent", pt)
+    assert got == ["back"]
+
+
+def test_rotary_clock_text():
+    import time
+    from rotary.ui.dial import dial_date, dial_time
+    t = time.struct_time((2026, 10, 23, 21, 5, 0, 4, 296, 0))
+    assert dial_time(t, False) == "9:05 PM" and dial_time(t, True) == "21:05"
+    t0 = time.struct_time((2026, 10, 23, 0, 7, 0, 4, 296, 0))
+    assert dial_time(t0, False) == "12:07 AM" and dial_time(t0, True) == "00:07"
+    assert dial_date(t) == "Fri, Oct 23"
+
+
+def test_rotary_paints_its_clock_and_weather():
+    import time
+    from PySide6.QtGui import QImage, QPainter
+    from rotary.ui.dial import draw_weather
+    from rotary.weather import KINDS, Weather
+    d = DialWindow(build_items(DEFAULT_CONFIG), 600)
+    dp = d.painter_
+    dp.weather = Weather("rain", 9.4, 48.9, False, "Light rain", time.time())
+    dp.begin(EngineSnapshot(phase=Phase.OPEN, selected=0, position=0))
+    for _ in range(60):
+        dp.tick(1 / 60)
+    for mode in ("12h", "24h", "off"):
+        dp.clock_mode = mode
+        img = QImage(d.width(), d.height(), QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(0)
+        p = QPainter(img)
+        dp.paint(p, d.width(), d.height())
+        p.end()
+        R = dp._geom()[0]
+        below = img.pixelColor(int(d.width() / 2), int(d.height() / 2 + R + 30)).alpha()
+        assert (below > 140) == (mode != "off")       # the glass capsule, not just the ring's shadow
+    assert Weather("clear", 21.6, 70.9).temperature(False) == "22°"
+    img = QImage(60, 60, QImage.Format.Format_ARGB32_Premultiplied)
+    p = QPainter(img)
+    for k in KINDS:
+        for night in (False, True):
+            draw_weather(p, k, QPointF(30, 30), 40, night)
+    p.end()
 
 
 # ------------------------------------------------------------------ sounds & the slim MediaPipe import

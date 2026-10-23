@@ -45,6 +45,7 @@ class MouseLogic:
         self.button = button if button in BUTTONS else ""
         self.active = False                  # the rotary is open for the mouse / keyboard
         self.circle: tuple[float, float, float] | None = None     # the rotary on screen: x, y, radius
+        self.zones: tuple[tuple[float, float, float, float], ...] = ()   # its other parts: (left, top, right, bottom)
         self._pending: tuple[float, float, float] | None = None   # middle pressed: (time, x, y)
         self._eat_up: set[str] = set()       # swallow these buttons' next release
         self._wheel = 0
@@ -53,11 +54,15 @@ class MouseLogic:
 
     def _inside(self, x: float, y: float) -> bool:
         c = self.circle
-        return c is not None and math.hypot(x - c[0], y - c[1]) <= c[2]
+        if c is not None and math.hypot(x - c[0], y - c[1]) <= c[2]:
+            return True
+        return any(z[0] <= x <= z[2] and z[1] <= y <= z[3] for z in self.zones)
 
-    def set_active(self, on: bool, circle: tuple[float, float, float] | None = None) -> None:
+    def set_active(self, on: bool, circle: tuple[float, float, float] | None = None,
+                   zones: tuple[tuple[float, float, float, float], ...] = ()) -> None:
         self.active = on
         self.circle = circle if on else None
+        self.zones = tuple(zones) if on else ()
         self._wheel = 0
 
     def tick(self, now: float) -> None:
@@ -160,9 +165,10 @@ class MouseTrigger(QObject):
             self._backend.stop()
             self._backend = None
 
-    def set_active(self, on: bool, circle: tuple[float, float, float] | None = None) -> None:
+    def set_active(self, on: bool, circle: tuple[float, float, float] | None = None,
+                   zones: tuple[tuple[float, float, float, float], ...] = ()) -> None:
         with self._lock:
-            self.logic.set_active(on, circle)
+            self.logic.set_active(on, circle, zones)
 
     def stop(self) -> None:
         if self._backend is not None:

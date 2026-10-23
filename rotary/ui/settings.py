@@ -1945,7 +1945,8 @@ class NotchPage(QWidget):
                  "opens. Then:\n"
                  "•  Scroll, or drag around the ring, to turn it\n"
                  "•  Click an item to bring it to the top; click it again, or click the centre, to open it\n"
-                 "•  Right-click to go back or close\n"
+                 "•  Right-click (or click ‹ at the top) to go back, or close\n"
+                 "•  Click the volume button beside it (or press + or −), then turn the ring to change the volume\n"
                  "•  ← → move, Enter opens, Esc goes back — clicking another window closes it")
         tw = QWidget()
         th = QHBoxLayout(tw)
@@ -2461,9 +2462,20 @@ class GeneralPage(QWidget):
         self.backdrop.changed.connect(self._backdrop)
         c.add(Row("Window background", "Wallpaper shows your desktop picture, softly blurred, through the glass",
                   self.backdrop))
-        self.size = SliderControl(460, 760, 20, ap.get("dial_size", 600), lambda x: f"{x:.0f} px")
+        self.size = SliderControl(460, 760, 20, ap.get("dial_size", 540), lambda x: f"{x:.0f} px")
         self.size.changed.connect(lambda x: self.set("appearance", "dial_size", int(x)))
         c.add(Row("Rotary size", None, self.size))
+        self.dial_clock = Segmented([("12h", "12-hour"), ("24h", "24-hour"), ("off", "Off")],
+                                    ap.get("dial_clock", "12h"))
+        self.dial_clock.setFixedWidth(300)
+        self.dial_clock.changed.connect(lambda k: self.set("appearance", "dial_clock", k))
+        c.add(Row("Clock on the rotary", "The time and date under the ring: 9:41 AM, or 21:41 as 24-hour time",
+                  self.dial_clock))
+        self.dial_weather = Switch(ap.get("dial_weather", True))
+        self.dial_weather.toggled.connect(lambda on: self.set("appearance", "dial_weather", on))
+        c.add(Row("Weather", "An icon for sun, cloud, rain or snow and the temperature beside the clock. It comes "
+                             "from wttr.in, which works out roughly where you are from your internet address.",
+                  self.dial_weather))
         self.pill = Switch(ap.get("status_pill", True))
         self.pill.toggled.connect(lambda on: self.set("appearance", "status_pill", on))
         c.add(Row("Status messages", "Short notes at the top of the screen — inside the notch when it's showing",

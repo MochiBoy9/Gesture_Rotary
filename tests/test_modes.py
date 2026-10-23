@@ -138,3 +138,15 @@ def test_off_does_nothing():
     assert not m.feed("down", "middle", 0, 0)
     m.tick(5.0)
     assert m.take() == []
+
+
+def test_mouse_hook_lets_the_volume_slider_through():
+    m = MouseLogic("middle")
+    m.set_active(True, (500, 500, 300), ((830, 300, 880, 700),))
+    assert not m.feed("down", "left", 850, 500)          # on the slider beside the ring: the rotary's own
+    assert not m.feed("wheel", "", 850, 500, delta=120)
+    assert m.take() == []
+    assert m.feed("down", "left", 950, 500)               # beyond it: closes
+    assert m.take() == [("close", 0)]
+    m.set_active(False)
+    assert m.zones == ()

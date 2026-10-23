@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.9.0] — Liquid glass
 
 ### New
 - **A redesigned Gesture Rotary window.** Liquid glass throughout: the sidebar and every card are panes of
@@ -16,6 +16,23 @@
   any other installed font in *General › Appearance › Font*.
 - **A new app icon:** the rotary itself, a glass ring of coloured items turning to the one under the selection
   lens, so it says what the app does at a glance.
+- **Volume from the mouse and keyboard.** When the rotary opens from the notch, the keyboard shortcut or the
+  mouse button, a liquid-glass volume button sits beside it, ringed by the current level. Click it (or press **+**
+  or **−**) and the ring becomes the volume: it turns itself round to where the volume already is, with the level
+  as a thin 0–360° line around it (a full turn is full, 4 % a click); scroll, drag or use the arrow keys, and
+  click the button or the centre when done. It's what the two-finger slider does by hand,
+  without a camera or a tracked hand.
+- **The time, the date and the weather on the rotary**, in a liquid-glass capsule under the ring: *9:41 AM · Fri, Oct
+  23 · ☁ 18°*. 12-hour by default; *General → Appearance → Clock on the rotary* switches to 24-hour or turns it
+  off, and *Weather* turns the icon and temperature off. The weather comes from wttr.in (no account needed).
+
+### Changed
+- Hovering the notch no longer says "Rotary". Hover for a moment with no call, music, timer or clip on it and it
+  says *Click to open wheel* (with your keyboard shortcut).
+- Inside a Quick nav ring opened from the mouse, the app's name at the top is a *‹ Back* button.
+- The two-finger slider's level beside the rotary is liquid glass now, like the ring.
+- The rotary is a little smaller by default (540 px, was 600; if you'd kept the old default it changes too), and the
+  glass lens at the top is smaller, smaller still on the slides, video and volume rings.
 
 ## [1.8.0] — Your own AI model
 

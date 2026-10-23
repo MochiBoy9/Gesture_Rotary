@@ -37,7 +37,7 @@ from .winapi import parse_keys, press_keys  # noqa: F401  (re-exported for calle
 
 log = logging.getLogger(__name__)
 CONFIG_PATH = DATA_DIR / "config.json"
-CONFIG_VERSION = 2
+CONFIG_VERSION = 3
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 ACTION_TYPES = {
@@ -127,7 +127,7 @@ DEFAULT_CONFIG = {
         "flip_handedness": True,
     },
     "appearance": {
-        "dial_size": 600,
+        "dial_size": 540,        # was 600 before config version 3
         "status_pill": True,
         "live_glass": False,
         "sounds": True,
@@ -136,6 +136,9 @@ DEFAULT_CONFIG = {
         "high_contrast": False,
         "reduce_motion": False,
         "speak": False,
+        "dial_clock": "12h",     # the clock under the rotary: 12h | 24h | off
+        "dial_weather": True,    # with the weather beside it (from wttr.in)
+        "weather_place": "",     # where, for the weather ('' = worked out from the internet address)
     },
     "general": {
         "keep_in_taskbar": True,
@@ -247,6 +250,9 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     if "onboarded" not in (data.get("general") or {}):
         cfg["general"]["onboarded"] = False         # existing users get the (short) welcome once
     _repair_items(cfg.get("items", []))
+    ap = cfg.get("appearance") or {}
+    if int(data.get("version", 0) or 0) < 3 and ap.get("dial_size") == 600:
+        ap["dial_size"] = 540                       # the old default: the rotary is a little smaller now
     cfg["version"] = CONFIG_VERSION
     return cfg
 
