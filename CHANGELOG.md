@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.10.0] — Gestures in front of your face
 
 ### Changed
 - **Gestures work in front of your face.** A hand used to be ignored whenever it overlapped your face on camera,

@@ -17,6 +17,7 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason="macOS / Linux b
 
 def test_versions_compare_numerically():
     assert update.is_newer("1.10.0", "1.9.9")
+    assert update.is_newer("v1.10.0", "1.9.1") and not update.is_newer("1.9.1", "1.10.0")   # numbers, not text
     assert update.is_newer("v1.5.2", "1.5.1")
     assert not update.is_newer("1.5.1", "1.5.1")
     assert not update.is_newer("1.5.0", "1.5.1")
