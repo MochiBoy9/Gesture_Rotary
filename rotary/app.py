@@ -231,26 +231,65 @@ def tray_icon(active: bool = True) -> QIcon:
 
 
 # --------------------------------------------------------------------------- face test & hand choice
-def hand_at_face(bbox: tuple[float, float, float, float], faces: list) -> bool:
-    """Is the hand resting on / covering the face or propping up the chin?
-    A hand raised beside the head is *not* at the face."""
-    hx0, hy0, hx1, hy1 = bbox
-    ha = max((hx1 - hx0) * (hy1 - hy0), 1e-6)
+# The camera only sees in 2D, so a hand held up in front of the face overlaps it on screen just like a hand
+# resting on the chin. What tells them apart is depth: a hand touching the face is about as far from the camera
+# as the face, a hand held up in front of it is clearly closer. Both sizes are known in real units (MediaPipe's
+# metric hand skeleton; the face detector's box is about FACE_SIZE_M across), so comparing how many image
+# heights a metre takes up on each gives the ratio of their distances.
+FACE_SIZE_M = 0.16        # real size of the face detector's box (cheek to cheek / brow to chin), metres
+TOUCH_DEPTH = 1.3         # a hand less than this much closer to the camera than the face is touching it
+TOUCH_DEPTH_EXIT = 1.45   # once touching, it has to come this far forward to count as in front again
+
+
+def face_depth(f: HandFeatures, face: tuple[float, float, float, float], aspect: float) -> float:
+    """How much closer to the camera the hand is than the face: 1 = same distance, 2 = half as far away.
+    0 when the hand's real size is unknown."""
+    fx0, fy0, fx1, fy1 = face
+    face_px_per_m = max((fx1 - fx0) * aspect, fy1 - fy0) / FACE_SIZE_M
+    return f.px_per_m / max(face_px_per_m, 1e-6)
+
+
+def _overlaps_face(f: HandFeatures, face: tuple[float, float, float, float]) -> bool:
+    """On screen, is the hand over the face, under the chin, or reaching into the face with a fingertip?
+    A hand raised beside the head does not overlap."""
+    hx0, hy0, hx1, hy1 = f.bbox
+    fx0, fy0, fx1, fy1 = face
+    fw, fh = fx1 - fx0, fy1 - fy0
     cx, cy = (hx0 + hx1) / 2, (hy0 + hy1) / 2
-    for fx0, fy0, fx1, fy1 in faces:
-        fw, fh = fx1 - fx0, fy1 - fy0
-        if fx0 <= cx <= fx1 and fy0 <= cy <= fy1:
-            return True
-        zx0, zx1 = fx0 - 0.15 * fw, fx1 + 0.15 * fw
-        zy0, zy1 = fy0 + 0.45 * fh, fy1 + 0.8 * fh
-        ix = max(0.0, min(hx1, zx1) - max(hx0, zx0))
-        iy = max(0.0, min(hy1, zy1) - max(hy0, zy0))
-        if ix * iy / ha > 0.35:
-            return True
-    return False
+    if fx0 <= cx <= fx1 and fy0 <= cy <= fy1:
+        return True
+    if any(fx0 <= x <= fx1 and fy0 <= y <= fy1 for x, y in f.tips):    # scratching a cheek, rubbing an eye
+        return True
+    ha = max((hx1 - hx0) * (hy1 - hy0), 1e-6)
+    zx0, zx1 = fx0 - 0.15 * fw, fx1 + 0.15 * fw
+    zy0, zy1 = fy0 + 0.45 * fh, fy1 + 0.8 * fh
+    ix = max(0.0, min(hx1, zx1) - max(hx0, zx0))
+    iy = max(0.0, min(hy1, zy1) - max(hy0, zy0))
+    return ix * iy / ha > 0.35
 
 
-def pick_hand(feats: list[HandFeatures], faces: list, prev: tuple[float, float] | None) -> tuple[int, bool]:
+def face_contact(f: HandFeatures, faces: list, aspect: float, was: bool = False) -> tuple[bool, float]:
+    """(touching the face, depth ratio to the face it overlaps or 0). Overlapping a face on screen is not enough:
+    the hand also has to be at about the face's distance, so gestures made in front of the face still work."""
+    depth = 0.0
+    for face in faces:
+        if not _overlaps_face(f, face):
+            continue
+        d = face_depth(f, face, aspect)
+        if d < (TOUCH_DEPTH_EXIT if was else TOUCH_DEPTH):
+            return True, d
+        depth = max(depth, d)
+    return False, depth
+
+
+def hand_at_face(f: HandFeatures, faces: list, aspect: float, was: bool = False) -> bool:
+    """Is the hand touching the face: propping up the chin, resting on a cheek, scratching?
+    A hand raised beside the head, or held up in front of the face, is *not* at the face."""
+    return face_contact(f, faces, aspect, was)[0]
+
+
+def pick_hand(feats: list[HandFeatures], faces: list, prev: tuple[float, float] | None,
+              aspect: float = 4 / 3) -> tuple[int, bool]:
     """Which hand to follow: the one being held up on purpose, preferring the one we already follow.
     Returns (index, is_same_hand_as_before)."""
     if not feats:
@@ -259,7 +298,7 @@ def pick_hand(feats: list[HandFeatures], faces: list, prev: tuple[float, float] 
     for i, f in enumerate(feats):
         near_prev = prev is not None and math.hypot(f.center[0] - prev[0], f.center[1] - prev[1]) < 0.25
         score = (f.scale * 4 + (1.5 if f.facing > 0.2 else 0.0) + (1.0 if f.upright_dev < 60 else 0.0)
-                 - (2.5 if hand_at_face(f.bbox, faces) else 0.0) + (1.2 if near_prev else 0.0))
+                 - (2.5 if hand_at_face(f, faces, aspect) else 0.0) + (1.2 if near_prev else 0.0))
         if score > best_score:
             best, best_score, same = i, score, near_prev
     return best, same
@@ -353,6 +392,7 @@ class RotaryApp(QObject):
         self.weather = WeatherWatcher(self)
         self.weather.changed.connect(lambda w: setattr(self.dial.painter_, "weather", self.weather.fresh()))
         self._was_sliding = False
+        self._was_at_face = False
         self.mouse_trigger = MouseTrigger(self)
         self.mouse_trigger.event.connect(self._on_mouse_trigger)
 
@@ -1413,7 +1453,8 @@ class RotaryApp(QObject):
         self._last_result_t = time.monotonic()
         flip = self.settings.flip_handedness
         feats = [extract_features(h, flip) for h in res.hands]
-        idx, same = pick_hand(feats, res.faces, self._prev_center)
+        aspect = res.width / max(res.height, 1)
+        idx, same = pick_hand(feats, res.faces, self._prev_center, aspect)
         f = None
         if idx >= 0:
             if not same:
@@ -1421,7 +1462,8 @@ class RotaryApp(QObject):
             h = res.hands[idx]
             label, conf = self.hands.update(h.handedness, h.score, feats[idx].grip, res.t)
             f = extract_features(h, flip, handedness=label, handed_conf=conf)
-            f.at_face = hand_at_face(f.bbox, res.faces)
+            f.at_face, f.face_depth = face_contact(f, res.faces, aspect, same and self._was_at_face)
+            self._was_at_face = f.at_face
             feats[idx] = f
             self._prev_center = f.center
             self._last_hand_t = time.monotonic()
@@ -1436,10 +1478,10 @@ class RotaryApp(QObject):
         self._was_sliding = snap.sliding
         if f is not None and log.isEnabledFor(logging.DEBUG) and res.t - self._last_dbg > 0.5:
             self._last_dbg = res.t
-            log.debug("hand %s(%.2f) facing=%+.2f grip=%.2f curls=%s pinch=%.2f roll=%+.0f fs=%.2f face=%s "
+            log.debug("hand %s(%.2f) facing=%+.2f grip=%.2f curls=%s pinch=%.2f roll=%+.0f fs=%.2f face=%s(%.2f) "
                       "frame=%s presented=%s point=%s phase=%s arming=%.2f pos=%.2f",
                       f.handedness, f.handed_conf, f.facing, f.grip, "/".join(f"{c:.1f}" for c in f.curls), f.pinch,
-                      math.degrees(f.angle), f.index_fs, f.at_face, f.in_frame, snap.presented, snap.pointing,
+                      math.degrees(f.angle), f.index_fs, f.at_face, f.face_depth, f.in_frame, snap.presented, snap.pointing,
                       snap.phase.value, snap.arming, snap.position)
         if self.dial.isVisible():
             self.dial.set_state(snap)

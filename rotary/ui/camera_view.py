@@ -104,7 +104,9 @@ class VideoView(QWidget):
         chips = []
         st = self.snap
         if st.hand_present and st.at_face:
-            chips.append(("Near your face — ignored", "#FFD60A"))
+            chips.append(("Touching your face — ignored", "#FFD60A"))
+        elif st.hand_present and 0 <= self.chosen < len(self.feats) and self.feats[self.chosen].face_depth > 0:
+            chips.append(("In front of your face", "#30D158"))
         chips.append(("Palm" if st.facing else ("Back of hand" if st.hand_present else "No hand"),
                       "#30D158" if st.facing else "#FF453A" if st.hand_present else "#8E8E93"))
         if st.hand_present:

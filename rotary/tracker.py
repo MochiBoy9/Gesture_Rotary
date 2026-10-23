@@ -114,8 +114,10 @@ def _make_landmarker():
         running_mode=vision.RunningMode.VIDEO,
         num_hands=2,
         min_hand_detection_confidence=0.5,
-        min_hand_presence_confidence=0.5,
-        min_tracking_confidence=0.5,
+        # A hand already found keeps being tracked a little more readily: against a face (skin on skin)
+        # the per-frame scores dip, and dropping the hand there would block gestures in front of the face.
+        min_hand_presence_confidence=0.4,
+        min_tracking_confidence=0.4,
     )
     return mp, vision.HandLandmarker.create_from_options(opts)
 
