@@ -5,8 +5,9 @@ Resting, it shows the time and one live activity around it — what's playing (a
 timer counting down, or Medal recording a game — plus tiny dots when an app uses the microphone (orange)
 or the camera (green). Short status messages (a clip was saved, an app launched…) slide in and out.
 
-Hover it for the details (now playing: art, title, progress and ⏮ ⏯ ⏭). Click it, or scroll on it, to open
-the rotary. Right-click for timers, screen assist and to customise what it shows.
+Hover it for the details (now playing: art, title, progress and ⏮ ⏯ ⏭); with nothing going on, a longer
+hover says "Click to open wheel". Click it, or scroll on it, to open the rotary. Right-click for timers, screen
+assist and to customise what it shows.
 
 Screen assist's answers stay on it for a while: the option to pick ("B") in a badge and a short answer;
 hover for the explanation, Copy and Dismiss.
@@ -35,6 +36,8 @@ G_CHECK, G_CLOSE = "\uE73E", "\uE711"
 CALL_BUTTONS = {"Discord": [("mute", "Mute"), ("deafen", "Deafen")], "Teams": [("mute", "Mute")],
                 "Zoom": [("mute", "Mute")]}
 PAUSED_SHOW_SECONDS = 120          # a paused song stays on the notch this long
+HOVER_HINT = "Click to open wheel"
+HOVER_HINT_SECONDS = 0.9           # a hover this long, with nothing else on the notch, shows the hint
 
 DEFAULT_OPTIONS = {"clock": "time", "clock_24h": None, "media": True, "media_art": True, "clips": True, "calls": True,
                    "privacy": True, "battery": True, "look": "dark", "alerts_over_games": True}
@@ -134,6 +137,10 @@ class NotchWindow(QWidget):
         self._answer_timer = QTimer(self)
         self._answer_timer.setSingleShot(True)
         self._answer_timer.timeout.connect(self._answer_expired)
+        self.hint_ready = False          # hovered long enough for "Click to open wheel"
+        self._hint_timer = QTimer(self)
+        self._hint_timer.setSingleShot(True)
+        self._hint_timer.timeout.connect(self._show_hint)
 
         self.w_s = Spring(self.COLLAPSED[0], 380.0, 30.0)
         self.h_s = Spring(self.COLLAPSED[1], 380.0, 30.0)
@@ -338,7 +345,7 @@ class NotchWindow(QWidget):
         return self.status_dot and self.status_kind == "warning"
 
     def _card_kind(self) -> str:
-        """Which detailed card a hover shows ('' = the small 'Rotary' chip)."""
+        """Which detailed card a hover shows ('' = none: the resting notch, or a one-line label)."""
         if self.hovered and self.answer is not None:
             return "answer"
         if not self.hovered or self.status_text or self.status_progress is not None:
@@ -364,9 +371,24 @@ class NotchWindow(QWidget):
         return ""
 
     def _hover_label(self) -> str:
-        if self.activity() == "clip":
+        """What a hover says when there's no card to show: nothing at first, then the hint (never over a call,
+        music, a timer or a clip — those have their own)."""
+        act = self.activity()
+        if act == "clip":
             return f"Medal is clipping {self.live.clipping}"
-        return "Rotary"
+        if act or not self.hint_ready:
+            return ""
+        return HOVER_HINT
+
+    def _show_hint(self) -> None:
+        if not self.hovered or self.hint_ready:
+            return
+        self.hint_ready = True
+        if not self.status_text and not self._card_kind() and self.answer is None and self._hover_label():
+            self._prev_text = ""
+            self.fade.snap(0.0)
+            self.fade.target = 1.0
+        self._retarget()
 
     def _text_width(self, text: str, px: float = 13.5) -> float:
         return self._font("text", px * self.k, QFont.Weight.DemiBold)[1].horizontalAdvance(text)
@@ -430,15 +452,15 @@ class NotchWindow(QWidget):
         if card == "call":
             w, h, r = self.CALL_CARD
             return w * s, h * s, r * s, 1.0
-        if self.hovered:
+        label = self._hover_label() if self.hovered else ""
+        if label:
             h = self.HOVER_H * s
-            label = self._hover_label()
             kf, kfm = self._font("text", 11 * self.k, QFont.Weight.Normal)
-            cap = kfm.horizontalAdvance(self.hotkey) + 30 * s if (self.hotkey and label == "Rotary") else 0
+            cap = kfm.horizontalAdvance(self.hotkey) + 30 * s if (self.hotkey and label == HOVER_HINT) else 0
             w = 40 * s + self._text_width(label) + 16 * s + cap
             return min(self.MAX_W * s, max(self.COLLAPSED[0] * s + 24 * s, w)), h, h / 2 - 2, 0.0
         busy = bool(self.activity() or self.status_dot or self._privacy())
-        if self.peek and not self.active and not busy:
+        if self.peek and not self.active and not busy and not self.hovered:
             w, h, r = self.PEEK
             return w * s, h * s, r * s, 0.0
         w, h, r = self.COLLAPSED
@@ -544,6 +566,8 @@ class NotchWindow(QWidget):
     def hideEvent(self, ev) -> None:
         super().hideEvent(ev)
         self.hovered = False             # no leave event comes for a window that's hidden under the mouse
+        self.hint_ready = False
+        self._hint_timer.stop()
         self._timer.stop()
         self._bd_timer.stop()
         if self.timer_end is None:
@@ -709,7 +733,7 @@ class NotchWindow(QWidget):
                 self._dial_mark(p, ic, 6.0 * s, 1.0)
             tx = rect.left() + 38 * s
             area = QRectF(tx, rect.top(), rect.right() - tx - 12, h)
-            if not self.status_text and self.hovered and self.hotkey and text == "Rotary":
+            if not self.status_text and self.hovered and self.hotkey and text == HOVER_HINT:
                 kf, kfm = self._font("text", 11 * self.k, QFont.Weight.Normal)
                 kw = kfm.horizontalAdvance(self.hotkey) + 14 * s
                 cap = QRectF(rect.right() - kw - 12 * s, cy - 10 * s, kw, 20 * s)
@@ -1077,6 +1101,8 @@ class NotchWindow(QWidget):
     def enterEvent(self, ev) -> None:
         if not self.hovered:
             self.hovered = True
+            self.hint_ready = False
+            self._hint_timer.start(int(HOVER_HINT_SECONDS * 1000))
             if not self.status_text and not self._card_kind():
                 self._prev_text = ""
                 self.fade.snap(0.0)
@@ -1086,6 +1112,8 @@ class NotchWindow(QWidget):
 
     def leaveEvent(self, ev) -> None:
         self.hovered = False
+        self.hint_ready = False
+        self._hint_timer.stop()
         self._hover_button = ""
         self._retarget()
 
