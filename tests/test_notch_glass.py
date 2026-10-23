@@ -206,7 +206,7 @@ def test_volume_button_beside_the_rotary():
     dp.paint(p, d.width(), d.height())
     p.end()
     assert img.pixelColor(int(pt.x()), int(pt.y())).alpha() > 150
-    assert "done" in dp.hint()
+    assert "change it" in dp.hint()
 
 
 def test_breadcrumb_is_a_back_button_from_the_mouse():

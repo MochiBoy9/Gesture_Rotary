@@ -2436,7 +2436,7 @@ class GeneralPage(QWidget):
         v.addWidget(c)
 
         c = Card("Appearance")
-        self.size = SliderControl(460, 760, 20, ap.get("dial_size", 600), lambda x: f"{x:.0f} px")
+        self.size = SliderControl(460, 760, 20, ap.get("dial_size", 540), lambda x: f"{x:.0f} px")
         self.size.changed.connect(lambda x: self.set("appearance", "dial_size", int(x)))
         c.add(Row("Rotary size", None, self.size))
         self.dial_clock = Segmented([("12h", "12-hour"), ("24h", "24-hour"), ("off", "Off")],

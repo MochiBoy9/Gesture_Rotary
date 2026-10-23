@@ -18,6 +18,8 @@
   says *Click to open wheel* (with your keyboard shortcut).
 - Inside a Quick nav ring opened from the mouse, the app's name at the top is a *‹ Back* button.
 - The two-finger slider's level beside the rotary is liquid glass now, like the ring.
+- The rotary is a little smaller by default (540 px, was 600; if you'd kept the old default it changes too), and the
+  glass lens at the top is smaller, smaller still on the slides, video and volume rings.
 
 ## [1.8.0] — Your own AI model
 

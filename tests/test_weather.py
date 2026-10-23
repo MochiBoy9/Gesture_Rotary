@@ -47,3 +47,15 @@ def test_volume_set_goes_to_a_level(monkeypatch):
             break
         time.sleep(0.01)
     assert got == [0.3]
+
+
+def test_old_default_rotary_size_becomes_the_new_one(tmp_path):
+    import json
+    from rotary.actions import load_config
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"version": 2, "appearance": {"dial_size": 600}}))
+    assert load_config(path)["appearance"]["dial_size"] == 540
+    path.write_text(json.dumps({"version": 2, "appearance": {"dial_size": 680}}))
+    assert load_config(path)["appearance"]["dial_size"] == 680       # a size someone chose stays
+    path.write_text(json.dumps({"version": 3, "appearance": {"dial_size": 600}}))
+    assert load_config(path)["appearance"]["dial_size"] == 600

@@ -241,7 +241,7 @@ class RotaryApp(QObject):
         ap = self.cfg.get("appearance", {})
         self.sounds = Sounds(bool(ap.get("sounds", True)), float(ap.get("volume", 0.6)))
         self.speaker = Speaker()
-        self.dial = DialWindow(self.items, int(ap.get("dial_size", 600)), bool(ap.get("live_glass", False)))
+        self.dial = DialWindow(self.items, int(ap.get("dial_size", 540)), bool(ap.get("live_glass", False)))
         self.dial.mouse.connect(self._on_dial_mouse)
         self.pill_enabled = bool(ap.get("status_pill", True))
         self.pill = PillWindow()
@@ -511,7 +511,7 @@ class RotaryApp(QObject):
         if not in_mode:
             self.engine.s = self.settings
         ap = self.cfg.get("appearance", {})
-        self.dial.set_dial_size(int(ap.get("dial_size", 600)))
+        self.dial.set_dial_size(int(ap.get("dial_size", 540)))
         self.dial.live_glass = bool(ap.get("live_glass", False))
         self.dial.painter_.set_accessibility(ap.get("text_scale", 1.0), ap.get("high_contrast", False),
                                              ap.get("reduce_motion", False))

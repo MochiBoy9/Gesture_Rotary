@@ -361,7 +361,9 @@ class DialPainter:
         Rin = R * 0.585
         Rmid = (R + Rin) / 2
         rc = Rin - 13
-        lens_r = (R - Rin) / 2 - 5
+        # The glass drop at 12 o'clock: just big enough for the chosen icon, smaller still on the slides /
+        # video / volume rings, which have no icon under it.
+        lens_r = ((R - Rin) / 2 - 5) * (0.84 if self.mode == "main" else 0.62)
         return R, Rin, Rmid, rc, lens_r
 
     def _ensure_cache(self, W: float, H: float, dpr: float) -> None:
@@ -1206,7 +1208,7 @@ class DialPainter:
             what = {"slides": "change slides", "volume": "change the volume"}.get(self.mode,
                                                                                  "move through the video")
             if self.keyboard and self.mode == "volume":
-                return "Scroll or ← → · Click the centre when done"
+                return "Scroll or ← → to change it"
             if self.keyboard:
                 return f"Scroll or ← → to {what} · Click the centre for apps · Esc to close"
             if not (st.hand_present and st.facing):
