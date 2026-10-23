@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### New
+- **A redesigned Gesture Rotary window.** Liquid glass throughout: the sidebar and every card are panes of
+  glass over a softly blurred copy of your desktop wallpaper (or a colourful *Aurora*, or *Plain*, in
+  *General › Appearance › Window background*).
+- **Home page.** Whether the rotary is ready, a big *Open the rotary* button, every way you can open it, the
+  switches people reach for most, and a tile for each section.
+- **Search settings.** Type in the sidebar's search field (Ctrl+F, or ⌘F on a Mac) to find any setting; pick a
+  result and the window jumps to it and highlights it. Ctrl+1 to Ctrl+9 open the sections in order, and the
+  sidebar groups them under *Rotary*, *Features* and *System*.
+- **Fonts.** The app now ships with Inter, an open font drawn in the same spirit as Apple's San Francisco, and
+  uses it for the window, the rotary, the notch and status messages (macOS keeps its own San Francisco). Pick
+  any other installed font in *General › Appearance › Font*.
+
 ## [1.8.0] — Your own AI model
 
 ### New

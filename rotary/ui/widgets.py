@@ -1,14 +1,14 @@
-"""Small Apple-style widget kit for the settings window (dark appearance)."""
+"""Small Apple-style widget kit for the settings window: dark liquid glass over a soft backdrop."""
 from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import QEasingCurve, QRectF, QSize, Qt, QVariantAnimation, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen
+from PySide6.QtCore import QEasingCurve, QPointF, QRectF, QSize, Qt, QVariantAnimation, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QAbstractButton, QColorDialog, QDialog, QFrame, QGridLayout, QHBoxLayout,
                                QLabel, QLineEdit, QScrollArea, QSlider, QToolButton, QVBoxLayout, QWidget)
 
-from .glass import ICONS, TEXT, font, white
+from .glass import DISPLAY, ICONS, TEXT, family, font, white
 
 UI_SCALE = 1.0   # text size multiplier for the settings window (Accessibility → Text size)
 
@@ -20,10 +20,11 @@ def focus_ring(p: QPainter, r: QRectF, radius: float) -> None:
 
 ACCENT = "#0A84FF"
 GREEN = "#30D158"
-BG = "#161619"
+BG = "#141418"
 SIDEBAR = "#1d1d21"
 CARD = "#232328"
-HAIRLINE = "rgba(255,255,255,0.07)"
+HAIRLINE = "rgba(255,255,255,0.08)"
+POPUP = "#26262c"            # menus, drop-downs and pop-ups: solid, since they float over other windows
 
 APPLE_COLORS = ["#0A84FF", "#32ADE6", "#64D2FF", "#30D158", "#FFD60A", "#FF9F0A",
                 "#FF453A", "#FF375F", "#BF5AF2", "#5E5CE6", "#AC8E68", "#8E8E93"]
@@ -52,54 +53,178 @@ def stylesheet(scale: float | None = None) -> str:
 
 
 def _stylesheet() -> str:
+    text, display = family(TEXT), family(DISPLAY)
     return f"""
-    QWidget {{ color: rgba(255,255,255,0.92); font-family: 'Segoe UI Variable Text', 'Segoe UI'; font-size: 13px; }}
+    QWidget {{ color: rgba(255,255,255,0.92); font-family: '{text}'; font-size: 13px; }}
     QWidget#window {{ background: {BG}; }}
-    QWidget#sidebar {{ background: {SIDEBAR}; }}
+    QDialog {{ background: {BG}; }}
     QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent; border: none; }}
-    QLabel#h1 {{ font-family: 'Segoe UI Variable Display', 'Segoe UI'; font-size: 26px; font-weight: 600; color: white; }}
-    QLabel#h2 {{ font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.45); padding-left: 14px; }}
-    QLabel#muted {{ color: rgba(255,255,255,0.50); font-size: 12px; }}
+    QStackedWidget, QWidget#page {{ background: transparent; }}
+    QLabel#h1 {{ font-family: '{display}'; font-size: 28px; font-weight: 700; color: white; }}
+    QLabel#h2 {{ font-size: 11.5px; font-weight: 600; color: rgba(255,255,255,0.50); padding-left: 14px;
+        letter-spacing: 0.4px; }}
+    QLabel#brand {{ font-family: '{display}'; font-size: 15px; font-weight: 700; color: white; }}
+    QLabel#navhead {{ font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.42); padding: 10px 10px 2px 10px; }}
+    QLabel#muted {{ color: rgba(255,255,255,0.55); font-size: 12px; }}
     QLabel#rowtitle {{ font-size: 13.5px; }}
-    QLabel#value {{ color: rgba(255,255,255,0.55); font-size: 12.5px; }}
-    QFrame#card {{ background: {CARD}; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; }}
+    QLabel#value {{ color: rgba(255,255,255,0.60); font-size: 12.5px; }}
+    QLabel#tiletitle {{ font-size: 13.5px; font-weight: 600; color: white; }}
+    QLabel#hero {{ font-family: '{display}'; font-size: 22px; font-weight: 700; color: white; }}
     QFrame#hairline {{ background: {HAIRLINE}; max-height: 1px; min-height: 1px; border: none; margin-left: 14px; }}
     QLineEdit, QPlainTextEdit, QComboBox, QKeySequenceEdit {{
-        background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); border-radius: 8px;
+        background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.11); border-radius: 9px;
         padding: 6px 10px; selection-background-color: {ACCENT}; }}
-    QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{ border: 1px solid {ACCENT}; }}
+    QLineEdit:hover, QComboBox:hover {{ background: rgba(255,255,255,0.10); }}
+    QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{ border: 1px solid {ACCENT}; background: rgba(0,0,0,0.18); }}
+    QLineEdit#search {{ border-radius: 10px; padding: 6px 10px; background: rgba(255,255,255,0.08); }}
     QPlainTextEdit {{ font-family: 'Cascadia Mono', 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace; font-size: 12.5px; }}
     QComboBox::drop-down {{ border: none; width: 22px; }}
-    QComboBox QAbstractItemView {{ background: #2a2a30; border: 1px solid rgba(255,255,255,0.12);
+    QComboBox QAbstractItemView {{ background: {POPUP}; border: 1px solid rgba(255,255,255,0.12);
         selection-background-color: {ACCENT}; outline: none; padding: 4px; }}
-    QPushButton {{ background: rgba(255,255,255,0.09); border: 1px solid rgba(255,255,255,0.10);
-        border-radius: 8px; padding: 6px 14px; }}
-    QPushButton:hover {{ background: rgba(255,255,255,0.14); }}
-    QPushButton:pressed {{ background: rgba(255,255,255,0.20); }}
-    QPushButton:disabled {{ color: rgba(255,255,255,0.3); }}
-    QPushButton#accent {{ background: {ACCENT}; border: none; color: white; font-weight: 600; }}
-    QPushButton#accent:hover {{ background: #2b95ff; }}
+    QMenu {{ background: {POPUP}; border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; padding: 5px; }}
+    QMenu::item {{ padding: 6px 22px 6px 12px; border-radius: 6px; }}
+    QMenu::item:selected {{ background: {ACCENT}; color: white; }}
+    QMenu::separator {{ height: 1px; background: rgba(255,255,255,0.10); margin: 4px 8px; }}
+    QCheckBox {{ spacing: 8px; }}
+    QCheckBox::indicator {{ width: 18px; height: 18px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.28);
+        background: rgba(255,255,255,0.06); }}
+    QCheckBox::indicator:hover {{ border: 1px solid rgba(255,255,255,0.45); }}
+    QCheckBox::indicator:checked {{ background: {ACCENT}; border: 1px solid rgba(255,255,255,0.30);
+        image: url({_check_png()}); }}
+    QCheckBox::indicator:disabled {{ background: rgba(255,255,255,0.03); border-color: rgba(255,255,255,0.12); }}
+    QCheckBox:disabled {{ color: rgba(255,255,255,0.4); }}
+    QPushButton {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(255,255,255,0.15),
+        stop:1 rgba(255,255,255,0.08)); border: 1px solid rgba(255,255,255,0.13);
+        border-top-color: rgba(255,255,255,0.24); border-radius: 15px; padding: 6px 16px; min-height: 18px; }}
+    QPushButton:hover {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(255,255,255,0.21),
+        stop:1 rgba(255,255,255,0.12)); }}
+    QPushButton:pressed {{ background: rgba(255,255,255,0.22); }}
+    QPushButton:disabled {{ color: rgba(255,255,255,0.3); background: rgba(255,255,255,0.05); }}
+    QPushButton#accent {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3D9BFF, stop:1 #0A7AF0);
+        border: 1px solid rgba(255,255,255,0.18); border-top-color: rgba(255,255,255,0.40); color: white;
+        font-weight: 600; }}
+    QPushButton#accent:hover {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #55A8FF, stop:1 #1F88FA); }}
+    QPushButton#accent:pressed {{ background: #0A6FDB; }}
     QPushButton#danger {{ color: #FF6961; }}
-    QToolButton#icon {{ background: rgba(255,255,255,0.07); border: none; border-radius: 7px;
-        font-family: 'Segoe Fluent Icons', 'Rotary Icons'; font-size: 13px; min-width: 30px; min-height: 28px; }}
-    QToolButton#icon:hover {{ background: rgba(255,255,255,0.14); }}
+    QToolButton#icon {{ background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 15px; font-family: 'Segoe Fluent Icons', 'Rotary Icons'; font-size: 13px;
+        min-width: 30px; min-height: 28px; }}
+    QToolButton#icon:hover {{ background: rgba(255,255,255,0.15); }}
     QToolButton#icon:disabled {{ color: rgba(255,255,255,0.25); }}
-    QSlider::groove:horizontal {{ height: 4px; background: rgba(255,255,255,0.14); border-radius: 2px; }}
+    QSlider::groove:horizontal {{ height: 4px; background: rgba(255,255,255,0.16); border-radius: 2px; }}
     QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 2px; }}
-    QSlider::handle:horizontal {{ background: white; width: 20px; height: 20px; margin: -8px 0; border-radius: 10px;
-        border: 1px solid rgba(0,0,0,0.25); }}
+    QSlider::handle:horizontal {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #e9e9ee);
+        width: 22px; height: 22px; margin: -9px 0; border-radius: 11px; border: 1px solid rgba(0,0,0,0.22); }}
     QListWidget {{ background: transparent; border: none; outline: none; }}
-    QListWidget::item {{ border-radius: 8px; padding: 0px; margin: 1px 0px; }}
-    QListWidget::item:selected {{ background: rgba(255,255,255,0.10); }}
-    QListWidget::item:hover:!selected {{ background: rgba(255,255,255,0.05); }}
+    QListWidget::item {{ border-radius: 9px; padding: 0px; margin: 1px 0px; }}
+    QListWidget::item:selected {{ background: rgba(255,255,255,0.12); }}
+    QListWidget::item:hover:!selected {{ background: rgba(255,255,255,0.06); }}
+    QListWidget#nav::item {{ padding: 6px 6px; border-radius: 9px; color: rgba(255,255,255,0.88); }}
+    QListWidget#nav::item:selected {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(255,255,255,0.20), stop:1 rgba(255,255,255,0.11)); color: white; }}
+    QListWidget#nav::item:disabled {{ background: transparent; }}
+    QListWidget#results {{ background: {POPUP}; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px;
+        padding: 4px; }}
+    QListWidget#results::item {{ padding: 6px 8px; border-radius: 7px; }}
+    QListWidget#results::item:selected {{ background: {ACCENT}; color: white; }}
     QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
-    QScrollBar::handle:vertical {{ background: rgba(255,255,255,0.18); border-radius: 4px; min-height: 30px; }}
+    QScrollBar::handle:vertical {{ background: rgba(255,255,255,0.20); border-radius: 4px; min-height: 30px; }}
     QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
-    QToolTip {{ background: #2c2c32; color: white; border: 1px solid rgba(255,255,255,0.12); padding: 4px 8px; }}
+    QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+    QToolTip {{ background: {POPUP}; color: white; border: 1px solid rgba(255,255,255,0.12); padding: 4px 8px; }}
     QPushButton:focus, QToolButton:focus {{ border: 2px solid {ACCENT}; }}
     QSlider:focus {{ background: rgba(10,132,255,0.10); border-radius: 6px; }}
     QListWidget:focus {{ outline: none; }}
     """
+
+
+_CHECK: str | None = None
+
+
+def _check_png() -> str:
+    """A white tick for checked check boxes, drawn once into the temp folder (style sheets want a file;
+    Qt picks the @2x copy on high-DPI screens)."""
+    global _CHECK
+    if _CHECK is None:
+        import tempfile
+        from pathlib import Path
+        from PySide6.QtGui import QImage
+        base = Path(tempfile.gettempdir()) / "gesture-rotary-check"
+        _CHECK = ""
+        for k, suffix in ((1, ""), (2, "@2x")):
+            img = QImage(18 * k, 18 * k, QImage.Format.Format_ARGB32_Premultiplied)
+            img.fill(Qt.GlobalColor.transparent)
+            p = QPainter(img)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.scale(k, k)
+            path = QPainterPath(QPointF(4.5, 9.5))
+            path.lineTo(7.5, 12.5)
+            path.lineTo(13.5, 5.5)
+            pen = QPen(QColor("white"), 2.0)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            p.setPen(pen)
+            p.drawPath(path)
+            p.end()
+            if img.save(str(base) + suffix + ".png") and not suffix:
+                _CHECK = (str(base) + ".png").replace("\\", "/")
+    return _CHECK
+
+
+# --------------------------------------------------------------------------- glass
+def paint_glass(p: QPainter, r: QRectF, radius: float, tint: float = 0.0, highlight: float = 0.0,
+                hover: bool = False) -> None:
+    """A pane of dark liquid glass: a smoky fill that lets the window's backdrop glow through, a light
+    sheen across the top, and a rim that catches the light at its top edge (like macOS 26 / iOS 26)."""
+    path = QPainterPath()
+    path.addRoundedRect(r, radius, radius)
+    fill = QLinearGradient(r.topLeft(), r.bottomLeft())
+    a = 1.0 - 0.25 * tint
+    lift = 14 if hover else 0
+    fill.setColorAt(0, QColor(58 + lift, 58 + lift, 68 + lift, int(150 * a)))
+    fill.setColorAt(0.5, QColor(36 + lift, 36 + lift, 44 + lift, int(150 * a)))
+    fill.setColorAt(1, QColor(30 + lift, 30 + lift, 38 + lift, int(165 * a)))
+    p.fillPath(path, fill)
+    sheen = QLinearGradient(r.topLeft(), QPointF(r.left(), r.top() + min(60.0, r.height() * 0.5)))
+    sheen.setColorAt(0, white(0.07))
+    sheen.setColorAt(1, white(0.0))
+    p.fillPath(path, sheen)
+    if highlight > 0:
+        p.fillPath(path, QColor(10, 132, 255, int(70 * highlight)))
+    rim = QLinearGradient(r.topLeft(), r.bottomRight())
+    rim.setColorAt(0, white(0.30))
+    rim.setColorAt(0.35, white(0.09))
+    rim.setColorAt(0.7, white(0.05))
+    rim.setColorAt(1, white(0.16))
+    p.setPen(QPen(rim, 1.0))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPath(path)
+
+
+class GlassPanel(QFrame):
+    """A frame drawn as liquid glass (see paint_glass): cards, the sidebar, the home page's hero."""
+
+    def __init__(self, radius: float = 14, tint: float = 0.0, parent=None):
+        super().__init__(parent)
+        self.radius = radius
+        self.tint = tint             # 0 (cards) .. 1 (the sidebar: a touch more see-through)
+        self.highlight = 0.0         # 0..1: search flashes the card holding what it found
+        self._flash = QVariantAnimation(self)
+        self._flash.setDuration(1600)
+        self._flash.setKeyValueAt(0, 0.0)
+        self._flash.setKeyValueAt(0.15, 1.0)
+        self._flash.setKeyValueAt(0.6, 1.0)
+        self._flash.setKeyValueAt(1, 0.0)
+        self._flash.valueChanged.connect(lambda v: (setattr(self, "highlight", float(v)), self.update()))
+
+    def flash(self) -> None:
+        self._flash.stop()
+        self._flash.start()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        paint_glass(p, QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), self.radius, self.tint, self.highlight)
 
 
 # --------------------------------------------------------------------------- switch
@@ -251,6 +376,7 @@ class Card(QWidget):
 
     def __init__(self, title: str | None = None, footer: str | None = None):
         super().__init__()
+        self.title = title or ""
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(6)
@@ -258,7 +384,7 @@ class Card(QWidget):
             t = QLabel(title.upper())
             t.setObjectName("h2")
             outer.addWidget(t)
-        self.frame = QFrame()
+        self.frame = GlassPanel()
         self.frame.setObjectName("card")
         self.lay = QVBoxLayout(self.frame)
         self.lay.setContentsMargins(0, 4, 0, 4)
@@ -445,7 +571,7 @@ class GlyphPicker(QDialog):
 
     def __init__(self, current: str, parent=None):
         super().__init__(parent, Qt.WindowType.Popup)
-        self.setStyleSheet(stylesheet() + "QDialog { background: #2a2a30; border: 1px solid rgba(255,255,255,0.12);"
+        self.setStyleSheet(stylesheet() + f"QDialog {{ background: {POPUP}; border: 1px solid rgba(255,255,255,0.12);"
                                           " border-radius: 10px; }")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)

@@ -14,9 +14,9 @@ import sys
 import threading
 
 from PySide6.QtCore import QEvent, QFileInfo, QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import (QColor, QFont, QFontDatabase, QFontMetricsF, QIcon, QImage, QKeySequence, QLinearGradient, QPainter,
-                           QPainterPath, QPixmap, QRadialGradient)
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFileIconProvider,
+from PySide6.QtGui import (QColor, QFont, QFontDatabase, QFontMetricsF, QIcon, QImage, QKeySequence, QLinearGradient,
+                           QPainter, QPainterPath, QPixmap, QRadialGradient, QShortcut)
+from PySide6.QtWidgets import (QAbstractButton, QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFileIconProvider,
                                QGridLayout, QHBoxLayout, QKeySequenceEdit, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QStackedWidget,
                                QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
@@ -32,7 +32,8 @@ from ..live import clip_folders
 from .dial import DialPainter
 from .notch import DEFAULT_OPTIONS as DEFAULT_ISLAND
 from .notch import system_24h
-from .glass import ICONS, TEXT, app_icon, blur_backdrop, font, white
+from .backdrop import STYLES as BACKDROPS
+from .glass import BUNDLED_TEXT, ICONS, SYSTEM_TEXT, TEXT, app_icon, blur_backdrop, font, font_choices, white
 from .widgets import (Card, ColorPicker, GlyphPicker, PresetTile, Row, Segmented, SliderControl, Switch,
                       icon_button, scroll_page, stylesheet)
 
@@ -121,7 +122,9 @@ def glyph_tile(code: str, color: str, px: int = 28) -> QIcon:
     p.setFont(font(ICONS, px * 0.55))
     p.drawText(r, Qt.AlignmentFlag.AlignCenter, chr(int(code, 16)))
     p.end()
-    return QIcon(pm)
+    icon = QIcon(pm)
+    icon.addPixmap(pm, QIcon.Mode.Selected)          # lists would otherwise tint the selected row's tile
+    return icon
 
 
 def app_tile(a, px: int = 28) -> QIcon:
@@ -995,7 +998,11 @@ class RotaryPage(QWidget):
         self.list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.list.model().rowsMoved.connect(self._reordered)
         self.list.currentRowChanged.connect(self._select)
-        left.addWidget(self.list, 1)
+        pane = widgets.GlassPanel(radius=16)
+        pl = QVBoxLayout(pane)
+        pl.setContentsMargins(6, 6, 6, 6)
+        pl.addWidget(self.list)
+        left.addWidget(pane, 1)
         bar = QHBoxLayout()
         bar.setSpacing(6)
         self.b_add = icon_button("\uE710", "Add an item")
@@ -2359,7 +2366,8 @@ class CameraPage(QWidget):
 LICENSES = [("Gesture Rotary — MIT License", "LICENSE"), ("Third-party software", "THIRD_PARTY_NOTICES.txt"),
             ("Apache License 2.0", "licenses/Apache-2.0.txt"), ("GNU LGPL 3.0", "licenses/LGPL-3.0.txt"),
             ("GNU GPL 3.0", "licenses/GPL-3.0.txt"), ("GNU LGPL 2.1", "licenses/LGPL-2.1.txt"),
-            ("Python Software Foundation License", "licenses/Python.txt")]
+            ("Python Software Foundation License", "licenses/Python.txt"),
+            ("SIL Open Font License 1.1 (Inter)", "licenses/OFL-1.1.txt")]
 COPYRIGHT = "Copyright © 2026 MochiBoy9"
 
 
@@ -2435,6 +2443,24 @@ class GeneralPage(QWidget):
         v.addWidget(c)
 
         c = Card("Appearance")
+        self.font = QComboBox()
+        self.font.setMaxVisibleItems(18)
+        self.font.setMinimumWidth(240)
+        for k, label in font_choices():
+            self.font.addItem(label, k)
+            if k:
+                self.font.setItemData(self.font.count() - 1, font([k] if k not in ("inter", "system") else
+                                      ([BUNDLED_TEXT] if k == "inter" else SYSTEM_TEXT), 13),
+                                      Qt.ItemDataRole.FontRole)
+        i = self.font.findData(ap.get("font", ""))
+        self.font.setCurrentIndex(i if i >= 0 else 0)
+        self.font.currentIndexChanged.connect(lambda _i: self.set("appearance", "font", self.font.currentData() or ""))
+        c.add(Row("Font", "Used in this window, on the rotary, in the notch and in status messages", self.font))
+        self.backdrop = Segmented(BACKDROPS, ap.get("window_backdrop", "wallpaper"))
+        self.backdrop.setFixedWidth(300)
+        self.backdrop.changed.connect(self._backdrop)
+        c.add(Row("Window background", "Wallpaper shows your desktop picture, softly blurred, through the glass",
+                  self.backdrop))
         self.size = SliderControl(460, 760, 20, ap.get("dial_size", 600), lambda x: f"{x:.0f} px")
         self.size.changed.connect(lambda x: self.set("appearance", "dial_size", int(x)))
         c.add(Row("Rotary size", None, self.size))
@@ -2474,7 +2500,7 @@ class GeneralPage(QWidget):
         c.add(Row("License", f"MIT License · {COPYRIGHT}", b))
         b = QPushButton("View")
         b.clicked.connect(lambda: LicensesDialog(self, 1).exec())
-        c.add(Row("Third-party software", "Qt, MediaPipe, OpenCV, NumPy and more, each under its own license", b))
+        c.add(Row("Third-party software", "Qt, MediaPipe, OpenCV, NumPy, the Inter font and more, each under its own license", b))
         v.addWidget(c)
 
         c = Card("Advanced")
@@ -2501,6 +2527,11 @@ class GeneralPage(QWidget):
 
     def set(self, section: str, key: str, value) -> None:
         self.app.cfg.setdefault(section, {})[key] = value
+        self.app.apply_config()
+
+    def _backdrop(self, style: str) -> None:
+        self.app.cfg.setdefault("appearance", {})["window_backdrop"] = style
+        self.win.set_backdrop(style)
         self.app.apply_config()
 
     def _login(self, on: bool) -> None:
@@ -2634,13 +2665,226 @@ class WelcomePage(QWidget):
         self.win.finish_welcome()
 
 
+# =========================================================================== home
+SECTION_BLURBS = {
+    "welcome": "Set up your camera, controls and apps",
+    "rotary": "What's on the ring, and in what order",
+    "apps": "Quick nav rings for your apps, and OBS",
+    "gestures": "Hand gestures and how they feel",
+    "notch": "Mouse & keyboard, and the Dynamic Island",
+    "assist": "Ask AI about what's on your screen",
+    "accessibility": "Text size, contrast, motion and sound",
+    "camera": "Which camera, and what it sees",
+    "general": "Startup, appearance, fonts and updates",
+}
+
+
+def glyph_icon(code: str, color: QColor, px: int = 16) -> QIcon:
+    """A bare symbol (no tile) as an icon, e.g. the magnifier in the search field."""
+    pm = QPixmap(px * 2, px * 2)
+    pm.setDevicePixelRatio(2)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+    p.setFont(font(ICONS, px * 0.8))
+    p.setPen(color)
+    p.drawText(QRectF(0, 0, px, px), Qt.AlignmentFlag.AlignCenter, chr(int(code, 16)))
+    p.end()
+    return QIcon(pm)
+
+
+class SectionTile(QAbstractButton):
+    """A way into one section from the home page: its symbol, name and what's in it."""
+
+    def __init__(self, glyph: str, color: str, title: str, text: str):
+        super().__init__()
+        self.glyph, self.color, self.title, self.text = glyph, color, title, text
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setAccessibleName(title)
+        self.setAccessibleDescription(text)
+        self.setMinimumHeight(int(70 * widgets.UI_SCALE))
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+
+    def sizeHint(self) -> QSize:
+        return QSize(240, int(72 * widgets.UI_SCALE))
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        widgets.paint_glass(p, r, 14, hover=self.underMouse() or self.isDown())
+        if self.hasFocus():
+            widgets.focus_ring(p, r, 14)
+        t = QRectF(r.left() + 14, r.center().y() - 17, 34, 34)
+        tile = QPainterPath()
+        tile.addRoundedRect(t, 9, 9)
+        g = QLinearGradient(t.topLeft(), t.bottomLeft())
+        g.setColorAt(0, QColor(self.color).lighter(118))
+        g.setColorAt(1, QColor(self.color))
+        p.fillPath(tile, g)
+        p.setPen(QColor("white"))
+        p.setFont(font(ICONS, 16))
+        p.drawText(t, Qt.AlignmentFlag.AlignCenter, chr(int(self.glyph, 16)))
+        k = widgets.UI_SCALE
+        tf = font(TEXT, 13.5 * k, QFont.Weight.DemiBold)
+        sf = font(TEXT, 11.5 * k)
+        th, sh = QFontMetricsF(tf).height(), QFontMetricsF(sf).height()
+        x = t.right() + 12
+        w = r.right() - x - 28
+        top = r.center().y() - (th + sh + 2) / 2
+        p.setFont(tf)
+        p.setPen(white(0.95))
+        p.drawText(QRectF(x, top, w, th), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.title)
+        p.setFont(sf)
+        p.setPen(white(0.58))
+        p.drawText(QRectF(x, top + th + 2, w, sh), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   QFontMetricsF(sf).elidedText(self.text, Qt.TextElideMode.ElideRight, w))
+        p.setFont(font(ICONS, 11))
+        p.setPen(white(0.35))
+        p.drawText(QRectF(r.right() - 28, r.top(), 18, r.height()), Qt.AlignmentFlag.AlignCenter, "")
+
+
+class HomePage(QWidget):
+    """The front page: whether the rotary is ready, the one button most people want, the switches people
+    reach for most, and a way into every section."""
+
+    def __init__(self, win: "MainWindow"):
+        super().__init__()
+        self.app = win.app
+        self.win = win
+        inner = QWidget()
+        v = QVBoxLayout(inner)
+        v.setContentsMargins(28, 24, 36, 32)
+        v.setSpacing(22)
+
+        hero = widgets.GlassPanel(radius=20)
+        hl = QHBoxLayout(hero)
+        hl.setContentsMargins(22, 20, 22, 20)
+        hl.setSpacing(18)
+        icon = QLabel()
+        icon.setPixmap(self.app.app_icon.pixmap(QSize(72, 72)))
+        icon.setFixedSize(72, 72)
+        hl.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
+        col = QVBoxLayout()
+        col.setSpacing(4)
+        title = QLabel("Gesture Rotary")
+        title.setObjectName("hero")
+        col.addWidget(title)
+        self.state = QLabel("")
+        self.state.setObjectName("value")
+        self.state.setWordWrap(True)
+        col.addWidget(self.state)
+        self.how = QLabel("")
+        self.how.setObjectName("muted")
+        self.how.setWordWrap(True)
+        col.addWidget(self.how)
+        col.addStretch(1)
+        hl.addLayout(col, 1)
+        self.open_btn = QPushButton("Open the rotary")
+        self.open_btn.setObjectName("accent")
+        self.open_btn.setStyleSheet("padding: 9px 22px; border-radius: 19px; font-size: "
+                                    f"{14 * widgets.UI_SCALE:.1f}px;")
+        self.open_btn.clicked.connect(self.app.manual_open)
+        hl.addWidget(self.open_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        v.addWidget(hero)
+
+        gen = self.app.cfg.get("general", {})
+        ap = self.app.cfg.get("appearance", {})
+        c = Card("Quick settings")
+        self.mode = Segmented(INPUT_MODES, input_mode(gen))
+        self.mode.setFixedWidth(380)
+        self.mode.changed.connect(self._mode)
+        c.add(Row("Open the rotary with", None, self.mode))
+        self.sounds = Switch(bool(ap.get("sounds", True)))
+        self.sounds.toggled.connect(lambda on: self._ap("sounds", on))
+        c.add(Row("Sounds", "Soft ticks while choosing", self.sounds))
+        self.pill = Switch(bool(ap.get("status_pill", True)))
+        self.pill.toggled.connect(lambda on: self._ap("status_pill", on))
+        c.add(Row("Status messages", "Short notes at the top of the screen", self.pill))
+        v.addWidget(c)
+
+        t = QLabel("ALL SETTINGS")
+        t.setObjectName("h2")
+        v.addWidget(t)
+        grid_w = QWidget()
+        self.grid = QGridLayout(grid_w)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setSpacing(10)
+        v.addWidget(grid_w)
+        self.tiles: dict[str, SectionTile] = {}
+        self.fill_tiles()
+        v.addStretch(1)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(scroll_page(inner))
+        self.refresh()
+
+    def fill_tiles(self) -> None:
+        for tile in self.tiles.values():
+            self.grid.removeWidget(tile)
+            tile.deleteLater()
+        self.tiles = {}
+        keys = [k for k in self.win._keys if k not in ("home", "welcome")]
+        for i, key in enumerate(keys):
+            _k, label, glyph, color = self.win.info(key)
+            tile = SectionTile(glyph, color, label, SECTION_BLURBS.get(key, ""))
+            tile.clicked.connect(lambda _=False, k=key: self.win.show_page(k))
+            self.grid.addWidget(tile, i // 2, i % 2)
+            self.tiles[key] = tile
+
+    def _mode(self, mode: str) -> None:
+        set_input_mode(self.app.cfg.setdefault("general", {}), mode)
+        self.app.apply_config()
+        self.refresh()
+
+    def _ap(self, key: str, value) -> None:
+        self.app.cfg.setdefault("appearance", {})[key] = value
+        self.app.apply_config()
+
+    def set_status(self, text: str) -> None:
+        gen = self.app.cfg.get("general", {})
+        if not gen.get("camera", True):
+            self.state.setText("Ready · hand gestures are off, so the notch, your mouse and keyboard open it")
+        elif text.startswith("●"):
+            self.state.setText(f"Ready · watching for your hand with {text.lstrip('● ')}")
+        else:
+            self.state.setText(text or "Looking for a camera…")
+
+    def refresh(self) -> None:
+        gen = self.app.cfg.get("general", {})
+        ap = self.app.cfg.get("appearance", {})
+        self.mode.set_value(input_mode(gen))
+        self.sounds.set_silent(bool(ap.get("sounds", True)))
+        self.pill.set_silent(bool(ap.get("status_pill", True)))
+        ways = []
+        if gen.get("camera", True):
+            ways.append("close your hand or hold your palm still")
+        hk = dict(HOTKEYS).get(gen.get("hotkey", "ctrl+alt+space"), "Off")
+        if hk != "Off":
+            ways.append("press " + hk.split("  (")[0])
+        mb = gen.get("mouse_button", "middle")
+        if mb != "off":
+            ways.append({"middle": "hold the middle mouse button", "back": "press the mouse's back button",
+                         "forward": "press the mouse's forward button"}.get(mb, "use your mouse button"))
+        if not gen.get("camera", True) or gen.get("notch", "auto") == "on":
+            ways.append("click the notch at the top of the screen")
+        self.how.setText(("To open it: " + ", ".join(ways[:-1]) + (" or " if len(ways) > 1 else "") + ways[-1]
+                          + ".") if ways else "")
+        self.set_status(self.win.status.text())
+
+
 # =========================================================================== window
 class MainWindow(QWidget):
-    PAGES = [("welcome", "Welcome", "E80F", "#0A84FF"), ("rotary", "Rotary", "E8F1", "#0A84FF"),
-             ("apps", "Apps", "F0E2", "#FF375F"), ("gestures", "Controls", "E815", "#FF9F0A"),
-             ("notch", "Notch", "E962", "#5E5CE6"), ("assist", "Screen assist", "E897", "#BF5AF2"),
-             ("accessibility", "Accessibility", "E776", "#30D158"), ("camera", "Camera", "E722", "#64D2FF"),
-             ("general", "General", "E713", "#8E8E93")]
+    """The Gesture Rotary window: a floating glass sidebar (search, sections, status) beside the current
+    page, all over a soft, blurred copy of your wallpaper."""
+    # (key, label, glyph, tile colour, sidebar group)
+    PAGES = [("welcome", "Welcome", "E734", "#FF9F0A", ""), ("home", "Home", "E80F", "#0A84FF", ""),
+             ("rotary", "Rotary", "E8F1", "#0A84FF", "Rotary"), ("apps", "Apps", "F0E2", "#FF375F", "Rotary"),
+             ("gestures", "Controls", "E815", "#FF9F0A", "Rotary"),
+             ("notch", "Notch", "E962", "#5E5CE6", "Features"), ("assist", "Screen assist", "E897", "#BF5AF2", "Features"),
+             ("accessibility", "Accessibility", "E776", "#30D158", "System"),
+             ("camera", "Camera", "E722", "#64D2FF", "System"), ("general", "General", "E713", "#8E8E93", "System")]
 
     def __init__(self, app):
         super().__init__(None)
@@ -2649,28 +2893,48 @@ class MainWindow(QWidget):
         self.setWindowTitle("Gesture Rotary")
         widgets.UI_SCALE = float(app.cfg.get("appearance", {}).get("text_scale", 1.0))
         self.setStyleSheet(stylesheet())
-        self.resize(1160, 780)
-        self.setMinimumSize(960, 640)
+        self.resize(1180, 800)
+        self.setMinimumSize(980, 660)
         self._dark_done = False
+        self._backdrop: QImage | None = None
+        self._backdrop_style = ""
+        self._scaled: QPixmap | None = None
+        self.set_backdrop(app.cfg.get("appearance", {}).get("window_backdrop", "wallpaper"))
 
         root = QHBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(10, 10, 0, 10)
         root.setSpacing(0)
-        side = QWidget()
+        side = widgets.GlassPanel(radius=18, tint=1.0)
         side.setObjectName("sidebar")
-        side.setFixedWidth(224)
+        side.setFixedWidth(240)
         sv = QVBoxLayout(side)
-        sv.setContentsMargins(12, 18, 12, 14)
-        sv.setSpacing(4)
+        sv.setContentsMargins(12, 16, 12, 12)
+        sv.setSpacing(8)
+        bh = QHBoxLayout()
+        bh.setContentsMargins(6, 0, 0, 4)
+        bh.setSpacing(10)
+        logo = QLabel()
+        logo.setPixmap(app.app_icon.pixmap(QSize(28, 28)))
+        logo.setFixedSize(28, 28)
+        bh.addWidget(logo)
         brand = QLabel("Gesture Rotary")
-        brand.setStyleSheet("font-family: 'Segoe UI Variable Display'; font-size: 15px; font-weight: 600;"
-                            " padding: 0 8px 12px 8px;")
-        sv.addWidget(brand)
+        brand.setObjectName("brand")
+        bh.addWidget(brand, 1)
+        sv.addLayout(bh)
+        self.search = QLineEdit()
+        self.search.setObjectName("search")
+        self.search.setPlaceholderText(f"Search  ({'⌘' if MAC else 'Ctrl+'}F)")
+        self.search.setAccessibleName("Search settings")
+        self.search.setClearButtonEnabled(True)
+        self.search.addAction(glyph_icon("E721", white(0.55)), QLineEdit.ActionPosition.LeadingPosition)
+        self.search.textChanged.connect(self._search)
+        self.search.installEventFilter(self)
+        sv.addWidget(self.search)
         self.nav = QListWidget()
+        self.nav.setObjectName("nav")
         self.nav.setIconSize(QSize(24, 24))
         self.nav.setAccessibleName("Sections")
-        self.nav.setStyleSheet("QListWidget::item { padding: 7px 6px; border-radius: 8px; }"
-                               "QListWidget::item:selected { background: rgba(255,255,255,0.10); color: white; }")
+        self.nav.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         sv.addWidget(self.nav, 1)
         self.open_btn = QPushButton("Open rotary now")
         self.open_btn.setObjectName("accent")
@@ -2679,7 +2943,7 @@ class MainWindow(QWidget):
         self.status = QLabel("")
         self.status.setObjectName("muted")
         self.status.setWordWrap(True)
-        self.status.setContentsMargins(4, 6, 4, 0)
+        self.status.setContentsMargins(6, 2, 6, 0)
         sv.addWidget(self.status)
         root.addWidget(side)
 
@@ -2687,21 +2951,218 @@ class MainWindow(QWidget):
         self.pages: dict[str, QWidget] = {}
         self.built = False                 # pages are made the first time the window is actually shown
         self.welcome = None
+        self.home = None
         welcome = not app.cfg.get("general", {}).get("onboarded", False)
-        self._keys: list[str] = []
-        for key, label, glyph, color in self.PAGES:
-            if key == "welcome" and not welcome:
-                continue
-            it = QListWidgetItem(glyph_tile(glyph, color), "  " + label)
-            it.setSizeHint(QSize(0, int(40 * widgets.UI_SCALE)))
-            it.setData(Qt.ItemDataRole.AccessibleTextRole, label)
-            self.nav.addItem(it)
-            self._keys.append(key)
+        self._keys: list[str] = [p[0] for p in self.PAGES if p[0] != "welcome" or welcome]
+        self._fill_nav()
         root.addWidget(self.stack, 1)
         self.nav.currentRowChanged.connect(self._page)
+
+        self.results = QListWidget(self)               # search results, floating under the search field
+        self.results.setObjectName("results")
+        self.results.setAccessibleName("Search results")
+        self.results.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.results.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.results.itemClicked.connect(self._go)
+        self.results.hide()
+        self._index: list[tuple[str, str, str, QWidget | None]] | None = None    # (key, title, where, widget)
+
+        find = QShortcut(QKeySequence(QKeySequence.StandardKey.Find), self)
+        find.activated.connect(lambda: (self.search.setFocus(), self.search.selectAll()))
+        for n in range(1, 10):
+            sc = QShortcut(QKeySequence(f"Ctrl+{n}"), self)
+            sc.activated.connect(lambda n=n: self._keys[n - 1:n] and self.show_page(self._keys[n - 1]))
         self.setWindowIcon(app.app_icon)
         self.tab_focus_only(self)
 
+    # ------------------------------------------------------------------ sidebar
+    def info(self, key: str) -> tuple[str, str, str, str]:
+        return next(p[:4] for p in self.PAGES if p[0] == key)
+
+    def _fill_nav(self) -> None:
+        self.nav.blockSignals(True)
+        current = self.current_key()
+        self.nav.clear()
+        group = None
+        k = widgets.UI_SCALE
+        for key in self._keys:
+            _key, label, glyph, color, g = next(p for p in self.PAGES if p[0] == key)
+            if g != group:
+                group = g
+                if g:
+                    head = QListWidgetItem(g)
+                    head.setFlags(Qt.ItemFlag.NoItemFlags)
+                    head.setForeground(white(0.42))
+                    head.setFont(font(TEXT, 11 * k, QFont.Weight.DemiBold))
+                    head.setSizeHint(QSize(0, int(30 * k)))
+                    self.nav.addItem(head)
+            it = QListWidgetItem(glyph_tile(glyph, color), "  " + label)
+            it.setSizeHint(QSize(0, int(38 * k)))
+            it.setData(Qt.ItemDataRole.UserRole, key)
+            it.setData(Qt.ItemDataRole.AccessibleTextRole, label)
+            self.nav.addItem(it)
+        self.nav.blockSignals(False)
+        if current:
+            self._select_nav(current)
+
+    def _row_of(self, key: str) -> int:
+        for i in range(self.nav.count()):
+            if self.nav.item(i).data(Qt.ItemDataRole.UserRole) == key:
+                return i
+        return -1
+
+    def _select_nav(self, key: str) -> None:
+        row = self._row_of(key)
+        if row >= 0:
+            self.nav.setCurrentRow(row)
+
+    def current_key(self) -> str | None:
+        it = self.nav.currentItem() if hasattr(self, "nav") else None
+        return it.data(Qt.ItemDataRole.UserRole) if it is not None else None
+
+    # ------------------------------------------------------------------ search
+    def _build_index(self) -> list[tuple[str, str, str, QWidget | None]]:
+        """Everything a search can find: each section, and every titled setting on each page."""
+        out = []
+        for key in self._keys:
+            _k, label, *_ = self.info(key)
+            out.append((key, label, SECTION_BLURBS.get(key, ""), None))
+            page = self.pages.get(key)
+            if page is None or key in ("home", "welcome"):
+                continue
+            for row in page.findChildren(Row):
+                card = row.parent()
+                while card is not None and not isinstance(card, Card):
+                    card = card.parent()
+                where = label + (f" › {card.title.capitalize() if card.title.isupper() else card.title}"
+                                 if card is not None and card.title else "")
+                out.append((key, row.title.text(), where, row))
+            for tile in page.findChildren(PresetTile):
+                out.append((key, tile.title, label, tile))
+        return out
+
+    def _search(self, text: str) -> None:
+        q = text.strip().casefold()
+        self.results.clear()
+        if not q or not self.built:
+            self.results.hide()
+            return
+        if self._index is None:
+            self._index = self._build_index()
+        words = q.split()
+        seen = set()
+        hits = []
+        for key, title, where, w in self._index:
+            subtitle = w.subtitle.text() if isinstance(w, Row) and w.subtitle is not None else ""
+            hay = f"{title} {where} {subtitle}".casefold()
+            if all(word in hay for word in words) and (key, title, where) not in seen:
+                seen.add((key, title, where))
+                score = (0 if title.casefold().startswith(q) else 1 if q in title.casefold() else 2)
+                hits.append((score, key, title, where, w))
+        hits.sort(key=lambda h: h[0])
+        for _s, key, title, where, w in hits[:8]:
+            _k, _l, glyph, color = self.info(key)
+            it = QListWidgetItem(glyph_tile(glyph, color, 24), f"{title}\n{where}")
+            it.setData(Qt.ItemDataRole.UserRole, (key, w))
+            it.setSizeHint(QSize(0, int(46 * widgets.UI_SCALE)))
+            self.results.addItem(it)
+        if not hits:
+            it = QListWidgetItem(f"No results for “{text.strip()}”")
+            it.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.results.addItem(it)
+        else:
+            self.results.setCurrentRow(0)
+        self._place_results()
+
+    def _place_results(self) -> None:
+        g = self.search.geometry()
+        top_left = self.search.mapTo(self, g.bottomLeft() - g.topLeft())
+        n = self.results.count()
+        h = sum(self.results.sizeHintForRow(i) for i in range(n)) + 12
+        self.results.setGeometry(top_left.x(), top_left.y() + 6, 360, min(h, 420))
+        self.results.show()
+        self.results.raise_()
+
+    def _go(self, item: QListWidgetItem | None) -> None:
+        data = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if not data:
+            return
+        key, w = data
+        self.search.clear()
+        self.results.hide()
+        self.show_page(key)
+        if w is not None:
+            QTimer.singleShot(60, lambda: self._reveal(w))
+
+    def _reveal(self, w: QWidget) -> None:
+        """Scroll a setting into view and flash the card it's in."""
+        from PySide6.QtWidgets import QScrollArea
+        sa = w.parent()
+        while sa is not None and not isinstance(sa, QScrollArea):
+            sa = sa.parent()
+        if sa is not None:
+            sa.ensureWidgetVisible(w, 0, 120)
+        glass = w
+        while glass is not None and not isinstance(glass, widgets.GlassPanel):
+            glass = glass.parent()
+        if glass is not None:
+            glass.flash()
+        (w.control if isinstance(w, Row) and w.control is not None else w).setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def eventFilter(self, obj, e):
+        if obj is self.search and e.type() == QEvent.Type.KeyPress:
+            key = e.key()
+            if key in (Qt.Key.Key_Down, Qt.Key.Key_Up) and self.results.isVisible():
+                step = 1 if key == Qt.Key.Key_Down else -1
+                self.results.setCurrentRow(max(0, min(self.results.count() - 1, self.results.currentRow() + step)))
+                return True
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self.results.isVisible():
+                self._go(self.results.currentItem())
+                return True
+            if key == Qt.Key.Key_Escape:
+                self.search.clear()
+                self.results.hide()
+                self.stack.setFocus()
+                return True
+        if obj is self.search and e.type() == QEvent.Type.FocusOut:
+            QTimer.singleShot(150, lambda: None if self.search.hasFocus() else self.results.hide())
+        return super().eventFilter(obj, e)
+
+    # ------------------------------------------------------------------ backdrop
+    def set_backdrop(self, style: str) -> None:
+        from . import backdrop
+        self._backdrop, self._backdrop_style = backdrop.make(style)
+        self._scaled = None
+        self.update()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._scaled = None
+        if self.results.isVisible():
+            self._place_results()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(widgets.BG))
+        if self._backdrop is None:
+            return
+        if self._scaled is None or self._scaled.size() != self.size():
+            self._scaled = QPixmap.fromImage(self._backdrop.scaled(
+                self.size(), Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        p.drawPixmap(0, 0, self._scaled)
+
+    def restyle(self) -> None:
+        """After a change of font or text size: style sheets, the sidebar and the pages' drawn text."""
+        self.setStyleSheet(stylesheet())
+        self._fill_nav()
+        if self.built:
+            self.rotary.list.doItemsLayout()
+            self.home.fill_tiles()
+            for w in self.findChildren(QWidget):
+                w.update()
+        self.update()
+
+    # ------------------------------------------------------------------ pages
     def ensure_pages(self) -> None:
         if self.built:
             return
@@ -2714,6 +3175,7 @@ class MainWindow(QWidget):
         self.accessibility = AccessibilityPage(self)
         self.camera = CameraPage(self)
         self.general = GeneralPage(self)
+        self.home = HomePage(self)
         if "welcome" in self._keys:
             self.welcome = WelcomePage(self)
         for key in self._keys:
@@ -2722,9 +3184,11 @@ class MainWindow(QWidget):
             self.stack.addWidget(page)
         self.tab_focus_only(self.stack)
         self.app.window_built()
-        self._page(max(0, self.nav.currentRow()))
+        self.nav.setFocus(Qt.FocusReason.OtherFocusReason)     # not the search field: typing shouldn't land there
         if self.nav.currentRow() < 0:
-            self.nav.setCurrentRow(0)
+            self._select_nav(self._keys[0])
+        else:
+            self._page(self.nav.currentRow())
 
     def page(self, key: str) -> QWidget | None:
         """A page if the window has been opened at least once (the app checks before updating one)."""
@@ -2743,9 +3207,11 @@ class MainWindow(QWidget):
             w.setFocusPolicy(Qt.FocusPolicy.TabFocus)
 
     def _page(self, i: int) -> None:
-        if not self.built or not 0 <= i < len(self._keys):
+        it = self.nav.item(i) if 0 <= i < self.nav.count() else None
+        key = it.data(Qt.ItemDataRole.UserRole) if it is not None else None
+        if not self.built or key not in self.pages:
             return
-        page = self.pages[self._keys[i]]
+        page = self.pages[key]
         self.stack.setCurrentWidget(page)
         if page is self.gestures:
             self.gestures.refresh()
@@ -2759,34 +3225,31 @@ class MainWindow(QWidget):
             self.assist.refresh()
         elif page is self.camera:
             self.camera.refresh()
+        elif page is self.home:
+            self.home.refresh()
 
     def show_page(self, key: str) -> None:
         self.ensure_pages()
         if key in self._keys:
-            self.nav.setCurrentRow(self._keys.index(key))
+            self._select_nav(key)
 
     def finish_welcome(self) -> None:
         if self.welcome is None:
             return
-        i = self._keys.index("welcome")
-        self.nav.takeItem(i)
-        self._keys.pop(i)
+        self._keys.remove("welcome")
         self.stack.removeWidget(self.welcome)
         self.welcome.deleteLater()
         self.pages.pop("welcome", None)
         self.welcome = None
+        self._index = None
+        self._fill_nav()
         self.rotary.reload()
         self.apps.sync_switches()
-        self.show_page("rotary")
+        self.show_page("home")
 
     def apply_text_scale(self, k: float) -> None:
         widgets.UI_SCALE = k
-        self.setStyleSheet(stylesheet())
-        for i in range(self.nav.count()):
-            self.nav.item(i).setSizeHint(QSize(0, int(40 * k)))
-        if self.built:
-            self.rotary.list.doItemsLayout()
-        self.update()
+        self.restyle()
 
     def wants_frames(self) -> bool:
         return (self.built and self.isVisible() and not self.isMinimized()
@@ -2794,6 +3257,8 @@ class MainWindow(QWidget):
 
     def set_status(self, text: str) -> None:
         self.status.setText(text)
+        if self.home is not None:
+            self.home.set_status(text)
         if self.welcome is not None:
             self.welcome.set_camera(text.lstrip("● ") or "Looking for a camera…")
 

@@ -15,8 +15,8 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QObject, QFileSystemWatcher, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import (QAction, QActionGroup, QColor, QGuiApplication, QIcon, QLinearGradient, QPainter, QPen,
-                           QPixmap, QRadialGradient)
+from PySide6.QtGui import (QAction, QActionGroup, QColor, QFont, QFontMetricsF, QGuiApplication, QIcon,
+                           QLinearGradient, QPainter, QPen, QPixmap, QRadialGradient)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
@@ -30,7 +30,7 @@ from .volume import Volume
 from .gestures import GestureEngine, GestureSettings, HandednessTracker, HandFeatures, Phase, extract_features
 from .tracker import CameraStatus, TrackerThread, TrackResult
 from .ui.dial import DialWindow
-from .ui.glass import load_fonts
+from .ui.glass import TEXT, family, font, load_fonts, set_text_font
 from .ui.notch import NotchWindow
 from .ui.pill import AMBER, BLUE, GRAY, GREEN, RED, PillWindow
 
@@ -223,6 +223,8 @@ class RotaryApp(QObject):
         self.app_icon = brand_icon()
         app.setWindowIcon(self.app_icon)
         self.cfg = load_config()
+        self._font_choice = None
+        self.apply_font()
         install_changed = system.refresh_install(self.cfg)
         self.items = build_items(self.cfg)       # the top-level ring
         self.level_items = self.items            # what the ring shows right now
@@ -467,6 +469,31 @@ class RotaryApp(QObject):
             self._no_cam_since = time.monotonic() - 60
         log.info("camera gestures %s", "on" if on else "off")
 
+    def apply_font(self) -> None:
+        """Use the font picked in General → Appearance (default: Inter, or San Francisco on macOS) for the
+        window, the rotary, the notch and the status pill."""
+        choice = str(self.cfg.get("appearance", {}).get("font", "") or "")
+        if choice == self._font_choice:
+            return
+        first = self._font_choice is None
+        self._font_choice = choice
+        set_text_font(choice)
+        f = QApplication.font()
+        f.setFamily(family())
+        QApplication.setFont(f)
+        if first:
+            return                                       # nothing has drawn any text yet
+        for cache in (getattr(self.dial.painter_, "_fonts", None), getattr(self.notch, "_fonts", None)):
+            if isinstance(cache, dict):
+                cache.clear()
+        if hasattr(self.pill, "_tf"):
+            self.pill._tf = font(TEXT, 13.5, QFont.Weight.DemiBold)
+            self.pill._fm = QFontMetricsF(self.pill._tf)
+        self.dial.update()
+        self.notch.update()
+        if getattr(self, "window", None) is not None:
+            self.window.restyle()
+
     def manual_open(self) -> None:
         self.open_manual()
 
@@ -502,6 +529,7 @@ class RotaryApp(QObject):
         if not in_mode:
             self.engine.s = self.settings
         ap = self.cfg.get("appearance", {})
+        self.apply_font()
         self.dial.set_dial_size(int(ap.get("dial_size", 600)))
         self.dial.live_glass = bool(ap.get("live_glass", False))
         self.dial.painter_.set_accessibility(ap.get("text_scale", 1.0), ap.get("high_contrast", False),

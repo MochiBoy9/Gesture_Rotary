@@ -130,6 +130,16 @@ LICENSE), each under its own copyright notice:
     https://github.com/benjaminp/six
 
 
+SIL Open Font License 1.1 (licenses/OFL-1.1.txt)
+------------------------------------------------
+
+Inter (assets/InterVariable.ttf: the app's default text font outside macOS)
+  Copyright (c) 2016 The Inter Project Authors
+  https://github.com/rsms/inter
+  The font is bundled unmodified. It may be used, embedded and
+  redistributed freely, but not sold by itself.
+
+
 Other licenses
 --------------
 

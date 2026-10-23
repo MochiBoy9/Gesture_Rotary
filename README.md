@@ -206,6 +206,16 @@ It also has:
 
 Every control in the window works with Tab, arrow keys and screen readers.
 
+## The Gesture Rotary window
+
+The window opens on **Home**: whether the rotary is ready, a button to open it, every way you can open it and a
+few quick switches. The sidebar groups the rest under *Rotary*, *Features* and *System*; its search field
+(Ctrl+F, ⌘F on a Mac) finds any setting and takes you straight to it, and Ctrl+1 to Ctrl+9 open the sections.
+
+*General › Appearance* sets the look: the **font** (Inter by default, San Francisco on a Mac, or any font you
+have installed; it's used on the rotary and the notch too) and the **window background** behind the glass:
+your blurred wallpaper, a colourful Aurora, or Plain.
+
 ## Accidental-open protection
 
 The rotary ignores a hand that is:
