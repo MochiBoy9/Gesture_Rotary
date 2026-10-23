@@ -230,7 +230,9 @@ your blurred wallpaper, a colourful Aurora, or Plain.
 The rotary ignores a hand that is:
 
 - stretching or moving fast
-- resting on your face or chin (face detection)
+- touching your face: propping up your chin, resting on a cheek, scratching (face detection). A hand held up
+  *in front of* your face still works: the app compares the hand's size with your face's to tell how far in
+  front of it the hand is
 - tilted away or partly out of view
 - a fist that never showed an open palm first
 - not yet identified as left or right

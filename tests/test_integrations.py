@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from rotary import actions, apps, integrations, obs, winapi
-from rotary.app import hand_at_face, pick_hand
+from rotary.app import TOUCH_DEPTH, face_contact, hand_at_face, pick_hand
 from rotary.gestures import extract_features
 from tests.synth import make_hand
 
@@ -194,16 +194,54 @@ def test_obs_unreachable_without_exe_explains(monkeypatch):
 FACE = (0.4, 0.15, 0.6, 0.45)        # x0, y0, x1, y1 (normalised)
 
 
+def _feat(**kw):
+    return extract_features(make_hand(**kw))
+
+
+# FACE is 0.3 image heights tall; a real palm (~0.09 m) at the face's distance is then ~0.17 image heights.
+AT_FACE_SIZE = 0.17
+
+
 def test_chin_resting_hand_is_at_face():
-    assert hand_at_face((0.42, 0.40, 0.58, 0.62), [FACE])          # under the chin
-    assert hand_at_face((0.45, 0.20, 0.55, 0.40), [FACE])          # over the face
-    assert not hand_at_face((0.70, 0.20, 0.88, 0.45), [FACE])      # raised beside the head
-    assert not hand_at_face((0.42, 0.40, 0.58, 0.62), [])          # no face seen
+    assert hand_at_face(_feat(flex=1.0, center=(0.5, 0.52), size=AT_FACE_SIZE), [FACE], 4 / 3)     # under the chin
+    assert hand_at_face(_feat(center=(0.5, 0.32), size=AT_FACE_SIZE), [FACE], 4 / 3)               # over the face
+    assert not hand_at_face(_feat(center=(0.8, 0.30), size=AT_FACE_SIZE), [FACE], 4 / 3)          # beside the head
+    assert not hand_at_face(_feat(flex=1.0, center=(0.5, 0.52), size=AT_FACE_SIZE), [], 4 / 3)     # no face seen
+
+
+def test_hand_held_up_in_front_of_the_face_is_not_at_face():
+    for size in (0.26, 0.32):                       # clearly closer to the camera than the face behind it
+        f = _feat(center=(0.5, 0.32), size=size)
+        at, depth = face_contact(f, [FACE], 4 / 3)
+        assert not at and depth > TOUCH_DEPTH
+    tilted = _feat(center=(0.5, 0.32), size=0.30, roll_deg=40)
+    assert not hand_at_face(tilted, [FACE], 4 / 3)
+
+
+def test_fingertips_on_the_face_count_as_touching():
+    # palm beside the face, fingers reaching onto the cheek (scratching)
+    f = _feat(center=(0.68, 0.40), size=AT_FACE_SIZE, roll_deg=-60)
+    assert any(FACE[0] <= x <= FACE[2] and FACE[1] <= y <= FACE[3] for x, y in f.tips)
+    assert hand_at_face(f, [FACE], 4 / 3)
+
+
+def test_face_touch_has_hysteresis():
+    f = _feat(center=(0.5, 0.32), size=AT_FACE_SIZE * 1.37)
+    assert not hand_at_face(f, [FACE], 4 / 3)
+    assert hand_at_face(f, [FACE], 4 / 3, was=True)      # was touching: has to come further forward to let go
+
+
+def test_face_depth_ignores_how_the_hand_is_turned():
+    flat = _feat(size=0.2)
+    rolled = _feat(size=0.2, roll_deg=70)
+    fist = _feat(size=0.2, flex=1.0)
+    assert abs(rolled.px_per_m / flat.px_per_m - 1) < 0.05
+    assert abs(fist.px_per_m / flat.px_per_m - 1) < 0.05
 
 
 def test_pick_hand_prefers_the_presented_hand():
-    resting = extract_features(make_hand(flex=1.0, center=(0.5, 0.55), size=0.2))
-    raised = extract_features(make_hand(center=(0.8, 0.35), size=0.2))
+    resting = extract_features(make_hand(flex=1.0, center=(0.5, 0.55), size=AT_FACE_SIZE))
+    raised = extract_features(make_hand(center=(0.8, 0.35), size=AT_FACE_SIZE))
     i, _ = pick_hand([resting, raised], [FACE], None)
     assert i == 1
 

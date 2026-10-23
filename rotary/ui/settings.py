@@ -1541,7 +1541,9 @@ class GesturesPage(QWidget):
         self.intent.setFixedWidth(270)
         self.intent_row = c.add(Row("Accidental-open protection", "", self.intent))
         self.face = Switch(g.ignore_near_face)
-        c.add(Row("Ignore hands near my face", "Resting your chin or cheek on your hand never opens it", self.face))
+        c.add(Row("Ignore hands touching my face",
+                  "Chin on your hand or scratching never opens it. Gestures in front of your face still work",
+                  self.face))
         v.addWidget(c)
 
         c = Card("Choosing an item")
@@ -2346,7 +2348,7 @@ class CameraPage(QWidget):
             else:
                 why = []
                 if f.at_face and g.ignore_near_face:
-                    why.append("resting near your face")
+                    why.append("touching your face")
                 if not f.in_frame:
                     why.append("partly out of view")
                 if f.upright_dev > max_tilt:

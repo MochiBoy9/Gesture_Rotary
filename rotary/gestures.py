@@ -62,7 +62,10 @@ class HandFeatures:
     bbox: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)  # normalised x0, y0, x1, y1
     in_frame: bool = True         # whole hand visible (not cut by the frame edge)
     handed_conf: float = 1.0      # 0..1 how sure we are of left/right (from HandednessTracker)
-    at_face: bool = False         # resting on / in front of the face (set by the app from face boxes)
+    at_face: bool = False         # touching the face: chin, cheek, scratching (set by the app from face boxes)
+    px_per_m: float = 0.0         # image heights per metre of hand: how close the hand is to the camera
+    tips: tuple[tuple[float, float], ...] = ()     # thumb..pinky fingertips, normalised x, y
+    face_depth: float = 0.0       # hand size vs. a face it overlaps: 1 = same distance, 2 = twice as close
 
     @property
     def upright_dev(self) -> float:
@@ -139,6 +142,11 @@ def extract_features(hand: HandFrame, flip_handedness: bool = False, handedness:
     idx_world = _norm(w[INDEX_TIP] - w[INDEX_MCP]) + 1e-9
     index_fs = _norm(p[INDEX_TIP] - p[INDEX_MCP]) / (idx_world * px_per_m)
 
+    # How big the hand really is on screen, whatever way it is turned: on-screen length over true length
+    # for several palm bones, taking the one lying flattest to the camera (it is the least foreshortened).
+    px_per_m_true = max(_norm(p[a] - p[b]) / (_norm(w[a] - w[b]) + 1e-9)
+                        for a, b in ((WRIST, INDEX_MCP), (WRIST, MIDDLE_MCP), (WRIST, PINKY_MCP), (INDEX_MCP, PINKY_MCP)))
+
     lm = hand.landmarks
     x0, y0 = float(lm[:, 0].min()), float(lm[:, 1].min())
     x1, y1 = float(lm[:, 0].max()), float(lm[:, 1].max())
@@ -160,6 +168,8 @@ def extract_features(hand: HandFrame, flip_handedness: bool = False, handedness:
         bbox=(x0, y0, x1, y1),
         in_frame=in_frame,
         handed_conf=handed_conf,
+        px_per_m=float(px_per_m_true),
+        tips=tuple((float(lm[i, 0]), float(lm[i, 1])) for i in (THUMB_TIP, INDEX_TIP, MIDDLE_TIP, 16, 20)),
     )
 
 

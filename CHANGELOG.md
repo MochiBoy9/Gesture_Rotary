@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **Gestures work in front of your face.** A hand used to be ignored whenever it overlapped your face on camera,
+  so anything done with your head behind it failed. Now a hand is only ignored when it is actually touching your
+  face (chin on your hand, a hand on your cheek, scratching): the app compares how big the hand and the face look
+  to tell a hand held up in front of the face from one resting on it. Fingertips reaching into the face count too.
+- A hand in front of the face stays tracked more readily (the camera view shows *In front of your face*).
+
 ## [1.9.1] — Stability and security
 
 ### Fixed
