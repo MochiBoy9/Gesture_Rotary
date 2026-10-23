@@ -64,7 +64,25 @@ running from source, it just says a new version is out.
 | Fist: **point** your index finger | Launches the selected item |
 | Open hand for 1.5 s | Back to palm mode: **pinch** or **hold still** on an item launches |
 | Back of the hand, or lower it | Closes |
+| **Index + middle finger up**, slide up or down | Changes the volume, like a fader, whether the rotary is open or not |
 | **Ctrl + Alt + Space** (Mac: **⌃⌥Space**) | Opens from the keyboard: ← → move, Enter launches, Esc closes |
+| **Hold the middle mouse button** | Opens for the mouse, even over a full-screen game (or a side button: *Accessibility*) |
+
+### Slides and videos
+
+What's in front decides how the rotary opens:
+
+- **Over a slideshow** (PowerPoint, Google Slides, Keynote, LibreOffice Impress…) it's a **slides ring**: no
+  icons, a cut between every two slides, and a firm click per slide so it doesn't change slide by accident. It
+  stops at the first and last slide. PowerPoint and Keynote say how many slides there are; with the others it
+  simply steps forward and back. Slides change with Page Down / Page Up, like a presentation clicker.
+- **Over a video** (YouTube, Netflix, Hulu, VLC, Media Player, mpv, QuickTime…) it's a **video ring**: one full
+  turn is the whole video, so turn it to the moment you want. It turns by itself as the video plays, holds still
+  while you turn it, and stops at the start and the end. It jumps through the system's media controls (Windows,
+  and MPRIS on Linux); where those can't move the video, or on a Mac, each click presses the player's own seek
+  key instead.
+- Click the centre, press Enter, pinch or point for your usual items. *Controls → Volume, slides and videos*
+  turns either ring off.
 
 ## Without a camera: the notch and the mouse
 
@@ -91,12 +109,19 @@ exclusive full-screen ones). *Look* switches between Dark (like a real notch) an
 
 | Do this | Result |
 | --- | --- |
-| Click the notch, or scroll on it, or press **Ctrl + Alt + Space** | Opens the rotary for the mouse and keyboard |
-| Scroll, or drag around the ring | Turns it |
+| Click the notch, or scroll on it, press **Ctrl + Alt + Space**, or hold the middle mouse button | Opens the rotary for the mouse and keyboard |
+| Scroll (anywhere), or drag around the ring | Turns it |
 | Click an item | Brings it to the top; click it again (or the centre) to open it |
 | Right-click · Esc | Goes back out of a Quick nav ring, or closes |
 | ← → · Enter | Turn · open |
-| Click into another window | Closes it |
+| Click outside it | Closes it |
+
+While it's open this way, clicks and scrolls outside the rotary stop at Gesture Rotary: the app underneath, say a
+full-screen game or video, never gets them, and clicking the rotary or the notch never takes the focus, so nothing
+leaves full screen. The mouse button works over full-screen apps, where the notch hides. A quick middle click (or
+pressing it and dragging) still reaches the app as usual; *Accessibility → Keyboard & mouse* can use the back or
+forward side button instead, or none. On a Mac this needs the Accessibility permission; on Linux the clicks and
+scrolls also reach the app underneath.
 
 A rotary opened by a gesture lets every click through to the windows underneath, as before.
 

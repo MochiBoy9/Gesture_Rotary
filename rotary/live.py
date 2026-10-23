@@ -501,6 +501,15 @@ class Media:
         elif cmd == "previous":
             await s.try_skip_previous_async()
 
+    async def seek(self, seconds: float) -> bool:
+        """Jump to `seconds` into what's playing. False if the player doesn't take positions."""
+        s = await self._session()
+        if s is None:
+            return False
+        tl = s.get_timeline_properties()
+        ticks = int((tl.start_time.total_seconds() + max(0.0, seconds)) * 10_000_000)     # 100 ns units
+        return bool(await s.try_change_playback_position_async(ticks))
+
 
 # =========================================================================== media (Linux: MPRIS via playerctl)
 class PlayerctlMedia:
@@ -565,6 +574,15 @@ class PlayerctlMedia:
         verb = {"play_pause": "play-pause", "next": "next", "previous": "previous"}.get(cmd)
         if verb:
             await asyncio.to_thread(self._run, verb)
+
+    async def seek(self, seconds: float) -> bool:
+        import subprocess
+        try:
+            r = await asyncio.to_thread(subprocess.run, ["playerctl", "position", f"{max(0.0, seconds):.2f}"],
+                                        capture_output=True, timeout=3)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return r.returncode == 0
 
 
 def media_source():

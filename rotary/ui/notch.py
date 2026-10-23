@@ -24,7 +24,8 @@ from PySide6.QtWidgets import QMenu, QWidget
 
 from ..live import LiveState, NowPlaying
 from . import liquid
-from .glass import ICONS, TEXT, Spring, black, exclude_from_capture, font, grab_behind, qcolor, stroke_rim, white
+from .glass import (ICONS, TEXT, Spring, black, exclude_from_capture, font, grab_behind, no_activate, qcolor,
+                    refuse_activation, stroke_rim, white)
 
 GREEN, AMBER, RED, BLUE, GRAY, ORANGE = "#30D158", "#FF9F0A", "#FF453A", "#0A84FF", "#8E8E93", "#FF9F0A"
 G_PREV, G_PLAY, G_PAUSE, G_NEXT, G_TIMER, G_MUSIC = "", "", "", "", "", ""
@@ -530,11 +531,15 @@ class NotchWindow(QWidget):
 
     def showEvent(self, ev) -> None:
         super().showEvent(ev)
+        no_activate(self)            # clicking the notch never takes the focus from the app in front
         if not self._excluded:
             self._excluded = exclude_from_capture(self, True)
         self._refresh_backdrop(force=True)
         self._wake()
         self._schedule_live()
+
+    def nativeEvent(self, event_type, message):
+        return refuse_activation(message)
 
     def hideEvent(self, ev) -> None:
         super().hideEvent(ev)

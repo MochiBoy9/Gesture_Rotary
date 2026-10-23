@@ -110,6 +110,35 @@ def exclude_from_capture(widget: QWidget, on: bool = True) -> bool:
         return False
 
 
+def no_activate(widget: QWidget) -> None:
+    """Clicking the window never makes it the active one (Windows: WS_EX_NOACTIVATE), so the app in front,
+    a full-screen game or video say, keeps the focus and stays full screen. Call once the window is shown."""
+    if sys.platform != "win32":
+        return            # macOS: a Qt tool window that doesn't accept focus is already a non-activating panel
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = ctypes.c_void_p(int(widget.winId()))
+        GWL_EXSTYLE, WS_EX_NOACTIVATE = -20, 0x08000000
+        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        if not style & WS_EX_NOACTIVATE:
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ctypes.c_long(style | WS_EX_NOACTIVATE))
+    except Exception:
+        pass
+
+
+def refuse_activation(message) -> tuple[bool, int]:
+    """For a QWidget.nativeEvent: answer Windows' WM_MOUSEACTIVATE with 'take the click, don't activate'."""
+    if sys.platform != "win32":
+        return False, 0
+    try:
+        from ctypes import wintypes
+        if wintypes.MSG.from_address(int(message)).message == 0x0021:      # WM_MOUSEACTIVATE
+            return True, 3                                                 # MA_NOACTIVATE
+    except Exception:
+        pass
+    return False, 0
+
+
 def overlay_flags(widget: QWidget) -> None:
     widget.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
                           | Qt.WindowType.Tool | Qt.WindowType.WindowTransparentForInput

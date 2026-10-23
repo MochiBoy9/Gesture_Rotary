@@ -14,8 +14,8 @@ from ..actions import Item
 from ..gestures import EngineSnapshot, Phase
 from . import liquid
 from .glass import (DISPLAY, ICONS, TEXT, Spring, angle_point, app_icon, black, circle, ease_out_cubic,
-                    exclude_from_capture, font, glass_disc, grab_behind, overlay_flags, qcolor, smoothstep,
-                    soft_shadow, stroke_rim, white)
+                    exclude_from_capture, font, glass_disc, grab_behind, no_activate, overlay_flags, qcolor,
+                    refuse_activation, smoothstep, soft_shadow, stroke_rim, white)
 
 
 def _wrap180(d: float) -> float:
@@ -84,6 +84,12 @@ class DialPainter:
         self.gauge_vis = Spring(0.0, 200.0, 26.0)
         self._gauge_rot = 0.0
         self._appear_kc = (190.0, 20.0)
+        # ring modes: "main" (items), "slides" (a cut per slide) or "video" (a full turn = the whole video)
+        self.mode = "main"
+        self.info: dict = {}           # what the mode ring says: title / sub / top, known, duration, edge
+        self.volume_level = 0.0        # the volume slider: last level (0..1, or -1 when unknown)
+        self.volume_until = 0.0
+        self.volume_vis = Spring(0.0, 260.0, 30.0)
         self.invalidate()
 
     def set_accessibility(self, text_scale: float = 1.0, high_contrast: bool = False,
@@ -99,6 +105,18 @@ class DialPainter:
         else:
             self.rot.k, self.rot.c = 520.0, 36.0
             self._appear_kc = (190.0, 20.0)
+
+    def set_mode(self, mode: str, items: list[Item], info: dict, state: EngineSnapshot) -> None:
+        """Switch between the item ring and a slides / video ring, with the same short zoom as Quick nav."""
+        self.mode = mode
+        self.info = dict(info)
+        self.set_level(items, "", state)
+        if mode == "video":
+            self.level_kick.snap(0.0)          # the video ring takes over the main one in place
+
+    def show_volume(self, level: float, seconds: float = 1.6) -> None:
+        self.volume_level = level
+        self.volume_until = time.monotonic() + seconds
 
     def set_level(self, items: list[Item], crumb: str, state: EngineSnapshot) -> None:
         """Swap to another ring (Quick nav in / Back out) with a short zoom."""
@@ -178,7 +196,9 @@ class DialPainter:
         self.state = state
         if state.phase == Phase.OPEN:
             sel = round(state.position)
-            if state.grip_mode:
+            if self.mode == "video":
+                self.rot.target = state.position        # continuous: the dial is the timeline
+            elif state.grip_mode:
                 # The engine already strains the knob against its detent: follow it as is.
                 self.rot.target = state.position
             else:
@@ -207,15 +227,17 @@ class DialPainter:
                 self.exiting = True
                 self.appear.target = 0.0
                 self.appear.k, self.appear.c = 120.0, 22.0
+        self.volume_vis.target = 1.0 if time.monotonic() < self.volume_until else 0.0
         for s in (self.appear, self.rot, self.title, self.grip_vis, self.tracked_vis,
-                  self.point_vis, self.push_vis, self.px, self.py, self.level_kick, self.gauge_vis):
+                  self.point_vis, self.push_vis, self.px, self.py, self.level_kick, self.gauge_vis,
+                  self.volume_vis):
             s.step(dt)
         if self.items:
             # Ring turned clockwise = positive degrees. Only the primary ring keeps count.
-            if not self.crumb:
+            if not self.crumb and self.mode == "main":
                 self.turned += (self._gauge_rot - self.rot.value) * 360.0 / len(self.items)
             self._gauge_rot = self.rot.value
-        self.gauge_vis.target = 1.0 if (not self.crumb and abs(self.turned) > 0.5) else 0.0
+        self.gauge_vis.target = 1.0 if (not self.crumb and self.mode == "main" and abs(self.turned) > 0.5) else 0.0
         if self.items:
             target = QColor(self.items[self.state.selected % len(self.items)].tint)
             self.tint = _mix(self.tint, target, min(1.0, dt * 10))
@@ -391,6 +413,10 @@ class DialPainter:
         p.setOpacity(opacity)
         p.drawPixmap(QRectF(-W / 2, -H / 2, W, H), self._static, QRectF())
         self._light(p, R, Rin, rc)
+        if self.mode != "main":
+            self._paint_mode(p, n, step, opacity)
+            self._volume(p, R)
+            return
 
         # ---- bezel ticks that turn with the hand
         rot_deg = -self.rot.value * step
@@ -414,24 +440,7 @@ class DialPainter:
         self._gauge(p, R)
 
         # ---- the lens (fixed at 12 o'clock): body first, highlights after the icons
-        v = self.rot.velocity
-        sx = 1.0 if self.reduce_motion else 1 + min(abs(v) * 0.055, 0.38)
-        sy = 1.0 if self.reduce_motion else 1 - min(abs(v) * 0.028, 0.14)
-        pulse = 1.0 - 0.07 * max(0.0, self.push_vis.value)          # pressed in by a finger push
-        if self.exec_t is not None:
-            pulse = 1 + 0.2 * math.sin(math.pi * min(self.exec_t / 0.3, 1.0))
-        Lc = QPointF(0, -Rmid)
-        lens = QPainterPath()
-        lens.addEllipse(Lc, lens_r * sx * pulse, lens_r * sy * pulse)
-        soft_shadow(p, Lc, lens_r * sy, 12, 0.20, dy=6)
-        if self._lens_brush is not None:
-            p.fillPath(lens, self._lens_brush)
-        p.fillPath(lens, qcolor(self.tint, 0.18))
-        p.fillPath(lens, white(0.05))
-        le = QRadialGradient(Lc, lens_r * max(sx, sy) * pulse)
-        le.setColorAt(0.70, white(0.0))
-        le.setColorAt(1.0, white(0.24))
-        p.fillPath(lens, le)
+        lens, Lc = self._lens_body(p, Rmid, lens_r)
 
         # ---- items around the ring (cached platters, scaled under the lens)
         sel = st.selected
@@ -452,20 +461,7 @@ class DialPainter:
         p.setOpacity(opacity)
 
         # ---- lens highlights over the icons (so they read as "inside" the glass)
-        p.save()
-        p.setClipPath(lens)
-        hl = QRadialGradient(QPointF(Lc.x() - lens_r * 0.35, Lc.y() - lens_r * 0.62), lens_r * 0.95)
-        hl.setColorAt(0.0, white(0.34))
-        hl.setColorAt(1.0, white(0.0))
-        p.fillPath(lens, hl)
-        bl = QRadialGradient(QPointF(Lc.x() + lens_r * 0.3, Lc.y() + lens_r * 0.9), lens_r * 0.8)
-        bl.setColorAt(0.0, white(0.16))
-        bl.setColorAt(1.0, white(0.0))
-        p.fillPath(lens, bl)
-        if self.exec_t is not None:
-            p.fillPath(lens, white(max(0.0, 0.55 * (1 - self.exec_t / 0.35))))
-        p.restore()
-        stroke_rim(p, lens, Lc, 1.6, 1.0)
+        self._lens_highlights(p, lens, Lc, lens_r)
         pv = self.push_vis.value
         if pv > 0.01 and self.exec_t is None:
             r = lens_r + 7
@@ -520,6 +516,178 @@ class DialPainter:
             p.restore()
 
         self._texts(p, rc)
+        self._volume(p, R)
+
+    def _lens_body(self, p: QPainter, Rmid: float, lens_r: float) -> tuple[QPainterPath, QPointF]:
+        v = self.rot.velocity
+        sx = 1.0 if self.reduce_motion else 1 + min(abs(v) * 0.055, 0.38)
+        sy = 1.0 if self.reduce_motion else 1 - min(abs(v) * 0.028, 0.14)
+        pulse = 1.0 - 0.07 * max(0.0, self.push_vis.value)          # pressed in by a finger push
+        if self.exec_t is not None:
+            pulse = 1 + 0.2 * math.sin(math.pi * min(self.exec_t / 0.3, 1.0))
+        Lc = QPointF(0, -Rmid)
+        lens = QPainterPath()
+        lens.addEllipse(Lc, lens_r * sx * pulse, lens_r * sy * pulse)
+        soft_shadow(p, Lc, lens_r * sy, 12, 0.20, dy=6)
+        if self._lens_brush is not None:
+            p.fillPath(lens, self._lens_brush)
+        p.fillPath(lens, qcolor(self.tint, 0.18))
+        p.fillPath(lens, white(0.05))
+        le = QRadialGradient(Lc, lens_r * max(sx, sy) * pulse)
+        le.setColorAt(0.70, white(0.0))
+        le.setColorAt(1.0, white(0.24))
+        p.fillPath(lens, le)
+        return lens, Lc
+
+    def _lens_highlights(self, p: QPainter, lens: QPainterPath, Lc: QPointF, lens_r: float) -> None:
+        p.save()
+        p.setClipPath(lens)
+        hl = QRadialGradient(QPointF(Lc.x() - lens_r * 0.35, Lc.y() - lens_r * 0.62), lens_r * 0.95)
+        hl.setColorAt(0.0, white(0.34))
+        hl.setColorAt(1.0, white(0.0))
+        p.fillPath(lens, hl)
+        bl = QRadialGradient(QPointF(Lc.x() + lens_r * 0.3, Lc.y() + lens_r * 0.9), lens_r * 0.8)
+        bl.setColorAt(0.0, white(0.16))
+        bl.setColorAt(1.0, white(0.0))
+        p.fillPath(lens, bl)
+        if self.exec_t is not None:
+            p.fillPath(lens, white(max(0.0, 0.55 * (1 - self.exec_t / 0.35))))
+        p.restore()
+        stroke_rim(p, lens, Lc, 1.6, 1.0)
+
+    # ------------------------------------------------------------- slides / video rings
+    def _band(self, p: QPainter, a0: float, span: float, r0: float, r1: float, color: QColor) -> None:
+        """Fill the part of the ring between radii r0..r1 from a0 (clockwise from 12 o'clock) for `span` degrees."""
+        if abs(span) < 0.05:
+            return
+        path = QPainterPath()
+        q0, q1 = QRectF(-r1, -r1, 2 * r1, 2 * r1), QRectF(-r0, -r0, 2 * r0, 2 * r0)
+        path.arcMoveTo(q0, 90 - a0)
+        path.arcTo(q0, 90 - a0, -span)
+        path.arcTo(q1, 90 - a0 - span, span)
+        path.closeSubpath()
+        p.fillPath(path, color)
+
+    def _cut(self, p: QPainter, deg: float, r0: float, r1: float, alpha: float, width: float) -> None:
+        a = math.radians(deg)
+        s_, c_ = math.sin(a), -math.cos(a)
+        p.setPen(QPen(white(alpha), width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawLine(QPointF(s_ * r0, c_ * r0), QPointF(s_ * r1, c_ * r1))
+
+    def _paint_mode(self, p: QPainter, n: int, step: float, opacity: float) -> None:
+        """A slides ring (a cut between every two slides, no icons) or a video ring (a full turn is the whole
+        video, the played part lit), with the lens on top and the slide / time in the middle."""
+        R, Rin, Rmid, rc, lens_r = self._geom()
+        st = self.state
+        r0, r1 = Rin + 5, R - 5
+        rot_deg = -self.rot.value * step
+        info = self.info
+        if self.mode == "slides":
+            # the slide under the lens, lit
+            self._band(p, st.selected * step + rot_deg - step / 2, step, r0, r1, qcolor(self.tint, 0.30))
+            every = max(1, math.ceil(3.0 / step))          # very many slides: not every cut, or it's a blur
+            for i in range(n):
+                ang = (i - 0.5) * step + rot_deg
+                d = abs(_wrap180(ang))
+                edge = info.get("known") and i == 0
+                if edge:                                     # the start / end: a firm stop
+                    self._cut(p, ang, r0 - 3, r1 + 3, 0.95, 3.2)
+                elif i % every == 0:
+                    major = info.get("known") and (i % 10 == 0 or (n <= 40 and i % 5 == 0))
+                    self._cut(p, ang, r0 + (0 if major else 6), r1 - (0 if major else 6),
+                              0.22 + 0.5 * max(0.0, 1 - d / 70), 2.0 if major else 1.4)
+        else:
+            frac = self.rot.value / max(1, n)
+            if info.get("duration", 0) > 0:
+                self._band(p, rot_deg, frac * 360.0, Rmid - (R - Rin) * 0.16, Rmid + (R - Rin) * 0.16,
+                           qcolor(self.tint, 0.55))
+            ticks = 60 if info.get("duration", 0) > 0 else 24
+            for j in range(ticks):
+                ang = j * 360.0 / ticks + rot_deg
+                d = abs(_wrap180(ang))
+                major = j % 5 == 0
+                self._cut(p, ang, r1 - (14 if major else 8), r1, 0.20 + 0.5 * max(0.0, 1 - d / 60),
+                          1.8 if major else 1.1)
+            if info.get("duration", 0) > 0:
+                self._cut(p, rot_deg, r0 - 3, r1 + 3, 0.95, 3.2)    # the start (and the end, a full turn on)
+
+        lens, Lc = self._lens_body(p, Rmid, lens_r)
+        if self.mode == "slides" and info.get("known") and n <= 60:
+            nf, fm_n = self._font("display", (15 if n <= 30 else 11) * self.text_scale, QFont.Weight.DemiBold)
+            p.setFont(nf)
+            for i in range(n):
+                rel = _wrap180(i * step + rot_deg)
+                if abs(rel) > 100:
+                    continue
+                pos = angle_point(Rmid, rel)
+                f = smoothstep(max(0.0, 1 - abs(rel) / max(step, 1e-3)))
+                p.setPen(white((0.35 + 0.6 * f) * (1 - abs(rel) / 110)))
+                p.drawText(QRectF(pos.x() - 22, pos.y() - 12, 44, 24), Qt.AlignmentFlag.AlignCenter, str(i + 1))
+        self._lens_highlights(p, lens, Lc, lens_r)
+
+        # the slide / time in the middle
+        k = self.text_scale
+        hc = self.high_contrast
+        width = 2 * (rc - 22)
+        title = info.get("title", "")
+        if self.mode == "video" and info.get("duration", 0) > 0:
+            from ..modes import fmt_time
+            title = fmt_time(max(0.0, min(1.0, self.rot.value / max(1, n))) * info["duration"])
+        tf, fm_t = self._font("display", 30 * k, QFont.Weight.DemiBold)
+        sf, fm_s = self._font("text", 14 * k, QFont.Weight.Medium if hc else QFont.Weight.Normal)
+        th, sh = fm_t.height(), fm_s.height()
+        p.setFont(tf)
+        p.setPen(black(0.28))
+        p.drawText(QRectF(-width / 2, -th + 3.2, width, th), Qt.AlignmentFlag.AlignCenter, title)
+        p.setPen(white(0.98))
+        p.drawText(QRectF(-width / 2, -th + 2, width, th), Qt.AlignmentFlag.AlignCenter, title)
+        p.setFont(sf)
+        p.setPen(white(0.9 if hc else 0.6))
+        p.drawText(QRectF(-width / 2, 4, width, sh + 2), Qt.AlignmentFlag.AlignCenter,
+                   fm_s.elidedText(info.get("sub", ""), Qt.TextElideMode.ElideRight, width))
+        top = info.get("top", "")
+        if top:
+            cf, fm_c = self._font("text", 11.5 * k, QFont.Weight.DemiBold)
+            p.setFont(cf)
+            p.setPen(white(0.85 if hc else 0.55))
+            p.drawText(QRectF(-width / 2, -rc * 0.52 - 14 - 12 * k, width, 14 * k + 4), Qt.AlignmentFlag.AlignCenter,
+                       fm_c.elidedText(top.upper(), Qt.TextElideMode.ElideRight, width * 0.8))
+        hint = self.hint()
+        hf, fm_h = self._font("text", 12.5 * k, QFont.Weight.Medium if hc else QFont.Weight.Normal)
+        p.setFont(hf)
+        p.setPen(white(0.88 if hc else 0.55))
+        p.drawText(QRectF(-width / 2, rc * 0.47 + (k - 1.0) * 10 - fm_h.height() / 2, width, fm_h.height()),
+                   Qt.AlignmentFlag.AlignCenter, fm_h.elidedText(hint, Qt.TextElideMode.ElideRight, width - 16))
+
+    def _volume(self, p: QPainter, R: float) -> None:
+        """The volume slider's level: a tall glass capsule to the right of the ring while it's in use."""
+        v = self.volume_vis.value
+        if v <= 0.01:
+            return
+        level = self.volume_level
+        h, w = R * 0.95, 12.0
+        x = R + 38
+        p.save()
+        p.setOpacity(p.opacity() * min(1.0, v))
+        track = QPainterPath()
+        track.addRoundedRect(QRectF(x - w / 2, -h / 2, w, h), w / 2, w / 2)
+        p.fillPath(track, QColor(10, 10, 14, 170))
+        if level >= 0:
+            fill = QPainterPath()
+            fh = max(w, h * level)
+            fill.addRoundedRect(QRectF(x - w / 2, h / 2 - fh, w, fh), w / 2, w / 2)
+            p.fillPath(fill, white(0.92))
+        p.strokePath(track, QPen(white(0.35), 1.0))
+        p.setFont(font(ICONS, 16 * self.text_scale))
+        p.setPen(white(0.95))
+        glyph = "\uE74F" if level == 0 else "\uE767"           # muted · speaker
+        p.drawText(QRectF(x - 16, -h / 2 - 30, 32, 24), Qt.AlignmentFlag.AlignCenter, glyph)
+        if level >= 0:
+            lf, fm = self._font("text", 12 * self.text_scale, QFont.Weight.DemiBold)
+            p.setFont(lf)
+            p.drawText(QRectF(x - 24, h / 2 + 6, 48, fm.height()), Qt.AlignmentFlag.AlignCenter,
+                       f"{level * 100:.0f}%")
+        p.restore()
 
     # ------------------------------------------------------------- pieces
     def _light(self, p: QPainter, R: float, Rin: float, rc: float) -> None:
@@ -732,6 +900,18 @@ class DialPainter:
         style = c.get("turn_style", "tilt")
         if self.exec_t is not None:
             return "Launching"
+        if st.sliding:
+            return "Slide up or down to change the volume"
+        if self.mode != "main":
+            what = "change slides" if self.mode == "slides" else "move through the video"
+            if self.keyboard:
+                return f"Scroll or ← → to {what} · Click the centre for apps · Esc to close"
+            if not (st.hand_present and st.facing):
+                return "Show your palm to continue"
+            if st.grip_mode:
+                return f"Tilt your fist to {what}" if st.gripping else "Close your hand to keep turning · point for apps"
+            verb = {"tilt": "Tilt", "move": "Move", "direct": "Turn"}.get(style, "Tilt")
+            return f"{verb} your hand to {what}"
         if self.keyboard:
             return "Scroll or ← → to turn · Click or Enter to open · Esc to close"
         if not (st.hand_present and st.facing):
@@ -804,6 +984,12 @@ class DialWindow(QWidget):
             self._last = time.perf_counter()
             self._timer.start()
 
+    def set_mode(self, mode: str, items: list[Item], info: dict, state: EngineSnapshot) -> None:
+        self.painter_.set_mode(mode, items, info, state)
+        if not self._timer.isActive():
+            self._last = time.perf_counter()
+            self._timer.start()
+
     def set_dial_size(self, size: int) -> None:
         if size != self.painter_.D and not self.isVisible():
             self.painter_.set_size(size)
@@ -836,6 +1022,7 @@ class DialWindow(QWidget):
             self._timer.setInterval(max(4, int(1000.0 / max(30.0, min(hz, 165.0)))))
             dp.prepare(self.width(), self.height(), screen.devicePixelRatio())
             self.show()
+            no_activate(self)                   # clicking it never takes the focus from a full-screen app
             want = bool(self.live_glass)
             if want != self._excluded:          # also undo it when live glass gets switched off
                 ok = exclude_from_capture(self, want)
@@ -878,6 +1065,9 @@ class DialWindow(QWidget):
         self.painter_.paint(p, self.width(), self.height())
         p.end()
 
+    def nativeEvent(self, event_type, message):
+        return refuse_activation(message)
+
     # ------------------------------------------------------------- mouse
     def _local(self, pt) -> tuple[float, float, float, float]:
         """(x, y, radius, clockwise-from-top angle) of a point relative to the dial centre."""
@@ -892,6 +1082,8 @@ class DialWindow(QWidget):
             return "", 0
         x, y, r, _a = self._local(pt)
         R, Rin, Rmid, rc, lens_r = dp._geom()
+        if dp.mode != "main":                 # no items to pick on a slides / video ring: drag it or scroll
+            return ("centre", 0) if r <= rc else (("ring", 0) if Rin - 4 <= r <= R + 6 else ("", 0))
         step = 360.0 / n
         best, best_d = -1, 1e9
         for i in range(n):

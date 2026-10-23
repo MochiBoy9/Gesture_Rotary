@@ -630,3 +630,98 @@ def test_point_on_a_new_ring_needs_a_fresh_point():
     s.run(0.2, flex=1.0)
     ev = s.run(0.3, **POINT)
     assert ("execute", 0) in [(e[1], e[2]) for e in ev]
+
+
+# ------------------------------------------------------------------ volume slider
+TWO = dict(finger_flex=(0, 0, 1, 1))
+
+
+def slide(s, y0, y1, seconds=0.6, **hand):
+    n = int(seconds * FPS)
+    out = []
+    for i in range(1, n + 1):
+        out += s.run(1 / FPS, center=(0.5, y0 + (y1 - y0) * i / n), jitter=0.0005, **hand)
+    return out
+
+
+def volume_steps(evs):
+    return sum(e[2] for e in evs if e[1] == "volume")
+
+
+def test_two_fingers_are_not_pointing_or_a_fist():
+    s = Sim()
+    s.run(0.4)
+    s.run(0.6, **TWO)
+    assert s.e.two_up and not s.e.pointing and not s.e.gripping
+
+
+def test_two_finger_slide_changes_volume_with_the_rotary_closed():
+    s = Sim()
+    s.run(0.4, center=(0.5, 0.6), **TWO)
+    up = slide(s, 0.6, 0.45, **TWO)                # up the screen: louder
+    assert volume_steps(up) > 3
+    assert s.e.snapshot().sliding
+    down = slide(s, 0.45, 0.6, **TWO)
+    assert volume_steps(down) < -3
+    assert s.e.phase == Phase.IDLE                 # sliding never opens the rotary
+    assert "open" not in s.names(s.events)
+
+
+def test_holding_two_fingers_still_does_nothing():
+    s = Sim()
+    assert volume_steps(s.run(2.0, center=(0.5, 0.6), **TWO)) == 0
+
+
+def test_volume_slide_works_with_the_rotary_open_and_holds_the_ring():
+    s = Sim()
+    s.run(3.1)
+    assert s.e.phase == Phase.OPEN
+    sel = s.e.selected
+    s.run(0.4, center=(0.5, 0.6), **TWO)
+    ev = slide(s, 0.6, 0.45, roll_deg=30, **TWO)    # tilted too: the ring must not scroll meanwhile
+    assert volume_steps(ev) > 3
+    assert "select" not in s.names(ev)
+    assert s.e.selected == sel and s.e.phase == Phase.OPEN
+
+
+def test_volume_slide_can_be_switched_off():
+    s = Sim(volume_slide=False)
+    s.run(0.4, center=(0.5, 0.6), **TWO)
+    assert volume_steps(slide(s, 0.6, 0.45, **TWO)) == 0
+
+
+# ------------------------------------------------------------------ slides / video rings
+def test_limited_ring_stops_at_its_ends():
+    s = Sim(n=8)
+    s.run(3.1)
+    s.e.enter_level(5, s.t, selected=0, limit=(0, 4))
+    assert s.e.key_step(-1, s.t) == []             # already on the first slide
+    for _ in range(10):
+        s.e.key_step(1, s.t)
+    assert s.e.sel_raw == 4
+
+
+def test_limited_grip_turn_does_not_wrap():
+    s = Sim(n=8)
+    s.run(3.1)
+    s.e.enter_level(4, s.t, selected=3, limit=(0, 3), fixed_step=26.0)
+    s.run(0.3, flex=1.0)
+    s.turn(0, -120, seconds=1.0, flex=1.0)          # counter-clockwise: towards later slides, past the end
+    assert s.e.sel_raw == 3
+
+
+def test_fixed_step_ignores_item_count():
+    e = GestureEngine(60)
+    assert e.step_degrees < 5
+    e.fixed_step = 26.0
+    assert e.step_degrees == 26.0
+
+
+def test_set_position_moves_without_counting_as_a_turn():
+    s = Sim(n=8)
+    s.run(3.1)
+    s.e.enter_level(120, s.t, selected=0, limit=(0, 120))
+    s.e.set_position(130.0, s.t)
+    assert s.e.sel_raw == 120 and not s.e.snapshot().interacted
+    s.e.set_position(42.4, s.t)
+    assert s.e.position == pytest.approx(42.4) and s.e.sel_raw == 42

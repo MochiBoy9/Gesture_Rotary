@@ -68,6 +68,8 @@ if MAC:
                ("win+alt+space", "⌥⌘Space  (Option + Command + Space)"), ("off", "Off")]
 elif not WIN:
     HOTKEYS[3] = ("win+alt+space", "Super + Alt + Space")
+MOUSE_BUTTONS = [("middle", "Hold the middle button (wheel)"), ("back", "Back side button"),
+                 ("forward", "Forward side button"), ("off", "Off")]
 # Screen assist. Ctrl + Alt + a letter is AltGr on many Windows keyboards (Polish ą…), so it isn't the default there.
 ASSIST_HOTKEYS = [("win+alt+a", "Win + Alt + A" if WIN else "Super + Alt + A"), ("ctrl+alt+a", "Ctrl + Alt + A"),
                   ("ctrl+shift+a", "Ctrl + Shift + A"), ("off", "Off")]
@@ -1558,6 +1560,20 @@ class GesturesPage(QWidget):
         c.add(Row("Push sensitivity", None, self.push_s))
         v.addWidget(c)
 
+        c = Card("Volume, slides and videos", "Two fingers change the volume whether the rotary is open or not. "
+                                             "Over a slideshow or a video the rotary opens as a slides or video "
+                                             "ring; click its centre, pinch or point for your items instead.")
+        self.vol = Switch(g.volume_slide)
+        c.add(Row("Volume slider", "Hold up your index and middle finger and slide up or down", self.vol))
+        mc = {"slides": True, "video": True, **(self.app.cfg.get("modes") or {})}
+        self.slides = Switch(bool(mc["slides"]))
+        c.add(Row("Slides ring", "Over PowerPoint, Google Slides, Keynote and other slideshows: turn to change "
+                                 "slides, with a firm click per slide", self.slides))
+        self.video = Switch(bool(mc["video"]))
+        c.add(Row("Video ring", "Over YouTube, Netflix, Hulu, VLC and other players: a full turn is the whole "
+                                "video", self.video))
+        v.addWidget(c)
+
         c = Card("Recognition")
         self.cal_label = QLabel()
         self.cal_label.setObjectName("value")
@@ -1593,7 +1609,14 @@ class GesturesPage(QWidget):
         self.swipe.toggled.connect(lambda on: self.set("finger_swipe", on))
         self.push.toggled.connect(lambda on: self.set("finger_push", on))
         self.push_s.changed.connect(lambda x: self.set("push_sensitivity", x))
+        self.vol.toggled.connect(lambda on: self.set("volume_slide", on))
+        self.slides.toggled.connect(lambda on: self._mode("slides", on))
+        self.video.toggled.connect(lambda on: self._mode("video", on))
         self.refresh()
+
+    def _mode(self, key: str, on: bool) -> None:
+        self.app.cfg.setdefault("modes", {})[key] = on
+        self.app.apply_config()
 
     def g(self) -> GestureSettings:
         return GestureSettings.from_dict(self.app.cfg.get("gestures"))
@@ -1636,6 +1659,10 @@ class GesturesPage(QWidget):
         self.swipe.set_silent(g.finger_swipe)
         self.push.set_silent(g.finger_push)
         self.push_s.set_value(g.push_sensitivity)
+        self.vol.set_silent(g.volume_slide)
+        mc = {"slides": True, "video": True, **(self.app.cfg.get("modes") or {})}
+        self.slides.set_silent(bool(mc["slides"]))
+        self.video.set_silent(bool(mc["video"]))
         self.cal_label.setText("Flipped" if g.flip_handedness else "Standard")
         self._texts()
 
@@ -1735,14 +1762,22 @@ class AccessibilityPage(QWidget):
         c.add(Row("Sound volume", None, self.volume))
         v.addWidget(c)
 
-        c = Card("Keyboard & mouse", "Open the rotary without gestures. While it's open from the keyboard or the "
-                                     "notch: ← and → move, Enter launches, Esc goes back or closes — and the mouse "
-                                     "works too: scroll or drag the ring, click to choose and open.")
+        c = Card("Keyboard & mouse", "Open the rotary without gestures. While it's open from the keyboard, the "
+                                     "mouse or the notch: ← and → move, Enter launches, Esc goes back or closes — and "
+                                     "the mouse works too: scroll anywhere or drag the ring, click to choose and open. "
+                                     "Clicks and scrolls outside the rotary stop there, so a full-screen game or "
+                                     "video underneath is never clicked into or knocked out of full screen.")
         self.hotkey = QComboBox()
         for k, label in HOTKEYS:
             self.hotkey.addItem(label, k)
         self.hotkey.setCurrentIndex(max(0, self.hotkey.findData(gen.get("hotkey", "ctrl+alt+space"))))
         c.add(Row("Shortcut to open the rotary", None, self.hotkey))
+        self.mouse_btn = QComboBox()
+        for k, label in MOUSE_BUTTONS:
+            self.mouse_btn.addItem(label, k)
+        self.mouse_btn.setCurrentIndex(max(0, self.mouse_btn.findData(gen.get("mouse_button", "middle"))))
+        c.add(Row("Mouse button to open the rotary", "Works over full-screen apps too. A quick middle click "
+                                                     "still works as usual", self.mouse_btn))
         v.addWidget(c)
         v.addStretch(1)
 
@@ -1761,6 +1796,11 @@ class AccessibilityPage(QWidget):
         self.sounds.toggled.connect(lambda on: self._ap("sounds", on))
         self.volume.changed.connect(lambda x: self._ap("volume", x))
         self.hotkey.currentIndexChanged.connect(self._hotkey)
+        self.mouse_btn.currentIndexChanged.connect(self._mouse_btn)
+
+    def _mouse_btn(self, _i: int) -> None:
+        self.app.cfg.setdefault("general", {})["mouse_button"] = self.mouse_btn.currentData()
+        self.app.apply_config()
 
     @staticmethod
     def _dist_key(v: float) -> str:

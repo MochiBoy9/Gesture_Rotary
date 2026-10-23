@@ -25,7 +25,7 @@ import numpy as np
 WRIST = 0
 THUMB_TIP = 4
 INDEX_MCP, INDEX_TIP = 5, 8
-MIDDLE_MCP = 9
+MIDDLE_MCP, MIDDLE_TIP = 9, 12
 PINKY_MCP = 17
 # (mcp, pip, dip, tip) for index, middle, ring, pinky
 FINGERS = ((5, 6, 7, 8), (9, 10, 11, 12), (13, 14, 15, 16), (17, 18, 19, 20))
@@ -57,6 +57,7 @@ class HandFeatures:
     handedness: str
     raw_facing: float = 0.0       # facing before any handedness flip (calibration)
     tip: tuple[float, float] = (0.0, 0.0)          # index fingertip, image-height units
+    tip2: tuple[float, float] = (0.0, 0.0)         # middle fingertip, image-height units
     index_fs: float = 1.0         # index finger foreshortening: 1 = in the image plane, →0 = pointing at camera
     bbox: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)  # normalised x0, y0, x1, y1
     in_frame: bool = True         # whole hand visible (not cut by the frame edge)
@@ -154,6 +155,7 @@ def extract_features(hand: HandFrame, flip_handedness: bool = False, handedness:
         handedness=label,
         raw_facing=float(raw_facing),
         tip=(float(p[INDEX_TIP][0]), float(p[INDEX_TIP][1])),
+        tip2=(float(p[MIDDLE_TIP][0]), float(p[MIDDLE_TIP][1])),
         index_fs=float(index_fs),
         bbox=(x0, y0, x1, y1),
         in_frame=in_frame,
@@ -278,6 +280,9 @@ class GestureSettings:
     grip_off: float = 0.40
     pinch_on: float = 0.30
     pinch_off: float = 0.45
+    # volume: index and middle finger up (the others curled), slid up or down like a fader
+    volume_slide: bool = True
+    volume_distance: float = 0.08     # palm lengths of travel per volume step (2%)
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "GestureSettings":
@@ -319,6 +324,7 @@ class EngineSnapshot:
     grip_turned: bool = False      # gripping and has turned since grabbing
     interacted: bool = False
     grip_mode: bool = False        # turning by grip: the knob follows a closed hand, a pointed finger opens
+    sliding: bool = False          # two fingers up: sliding changes the volume (in any phase)
 
 
 # --------------------------------------------------------------------------- #
@@ -397,6 +403,16 @@ class GestureEngine:
         self._lean = 0.0
         self._scroll_dir = 0
         self._next_step = 0.0
+        # volume slider (index + middle finger)
+        self.two_up = False
+        self._two_frames = 0
+        self._two_since = 0.0
+        self._vol_anchor: float | None = None
+        self.sliding = False
+        # ring modes: slides / video keep the selection inside [lo, hi] and can use a fixed turn per item
+        self.limit: tuple[int, int] | None = None
+        self.fixed_step: float | None = None
+        self._frac = 0.0                     # set_position's offset from the nearest item (a video between steps)
 
     # ------------------------------------------------------------------ api
     def set_item_count(self, n: int) -> None:
@@ -404,12 +420,31 @@ class GestureEngine:
         self.sel_raw %= self.n
         self.position = float(self.sel_raw)
 
+    def _clamp(self, sel: int) -> int:
+        if self.limit is None:
+            return sel
+        return max(self.limit[0], min(self.limit[1], sel))
+
+    def set_position(self, position: float, now: float) -> None:
+        """Move the ring from outside (a video playing on), without counting as the user turning it."""
+        if self.phase != Phase.OPEN:
+            return
+        lo, hi = self.limit if self.limit is not None else (-10 ** 9, 10 ** 9)
+        position = max(float(lo), min(float(hi), position))
+        if self.s.turn_style == "direct":
+            self._base_pos += position - self.position     # the hand keeps its place relative to the ring
+        self.sel_raw = int(round(position))
+        self._frac = position - self.sel_raw
+        self.position = position
+
     @property
     def selected(self) -> int:
         return self.sel_raw % self.n
 
     @property
     def step_degrees(self) -> float:
+        if self.fixed_step:
+            return self.fixed_step
         # Keep every item reachable within ~100 degrees of wrist roll either way.
         half = max(1.0, self.n / 2.0)
         return min(self.s.degrees_per_item, 100.0 / half)
@@ -436,10 +471,15 @@ class GestureEngine:
             return []
         return self._execute(now)
 
-    def enter_level(self, n: int, now: float, selected: int = 0) -> None:
-        """Swap the ring's contents (Quick nav / Back) and keep going from a neutral hand."""
+    def enter_level(self, n: int, now: float, selected: int = 0, limit: tuple[int, int] | None = None,
+                    fixed_step: float | None = None) -> None:
+        """Swap the ring's contents (Quick nav / Back, or a slides / video ring) and keep going from a
+        neutral hand. `limit` stops the selection at its ends instead of wrapping around."""
         self.n = max(1, n)
-        self.sel_raw = selected % self.n
+        self.limit = limit
+        self.fixed_step = fixed_step
+        self._frac = 0.0
+        self.sel_raw = self._clamp(selected) if limit is not None else selected % self.n
         self.position = float(self.sel_raw)
         self._base_pos = self.position
         self.phase = Phase.OPEN
@@ -493,6 +533,7 @@ class GestureEngine:
             and self.sel_raw != self._grip_start_sel,
             interacted=self._interacted,
             grip_mode=self._grip_mode,
+            sliding=self.sliding,
         )
 
     _last_now = 0.0
@@ -529,6 +570,7 @@ class GestureEngine:
             self.still_armed = True
 
         self._presented = bool(tracked and self._is_presented(f))
+        events += self._update_volume(tracked, now)
 
         if self.phase == Phase.IDLE:
             events += self._update_idle(tracked, now)
@@ -552,8 +594,8 @@ class GestureEngine:
         self._ang_prev = None
         self._prev_c = None
         self._speed = 0.0
-        self._grip_frames = self._pinch_frames = self._point_frames = 0
-        self.gripping = self.pinching = self.pointing = False
+        self._grip_frames = self._pinch_frames = self._point_frames = self._two_frames = 0
+        self.gripping = self.pinching = self.pointing = self.two_up = False
         self.facing = False
         self._facing_ema = 0.0
         self._grip_ema = 0.0
@@ -613,9 +655,9 @@ class GestureEngine:
 
         # Pointing: index straight, the other three curled.
         others = (f.curls[1] + f.curls[2] + f.curls[3]) / 3.0
-        is_point = f.curls[0] < 0.35 and others > 0.6
+        is_point = f.curls[0] < 0.35 and others > 0.6 and f.curls[1] > 0.5
         if self.pointing:
-            if f.curls[0] > 0.5 or others < 0.45:
+            if f.curls[0] > 0.5 or others < 0.45 or f.curls[1] < 0.35:
                 self._point_frames -= 1
                 if self._point_frames <= -3:
                     self.pointing = False
@@ -636,6 +678,25 @@ class GestureEngine:
                 self._tips.clear()
         else:
             self._point_frames = 0
+
+        # Two fingers up (index + middle straight, ring + pinky curled): the volume slider.
+        is_two = (f.curls[0] < 0.35 and f.curls[1] < 0.35 and f.curls[2] > 0.55 and f.curls[3] > 0.5)
+        if self.two_up:
+            if f.curls[0] > 0.5 or f.curls[1] > 0.5 or f.curls[2] < 0.4:
+                self._two_frames -= 1
+                if self._two_frames <= -3:
+                    self.two_up = False
+                    self._two_frames = 0
+            else:
+                self._two_frames = 0
+        elif is_two:
+            self._two_frames += 1
+            if self._two_frames >= 3:
+                self.two_up = True
+                self._two_frames = 0
+                self._two_since = now
+        else:
+            self._two_frames = 0
 
         # Pinch only counts with the other fingers open.
         others_open = others < 0.5
@@ -666,7 +727,7 @@ class GestureEngine:
         s = self.s
         f = self._f
         _, _, _, need_open_palm, _, grip_hold, max_speed = s.profile
-        if not tracked or f is None:
+        if not tracked or f is None or self.two_up:
             self._anchor = None
             self._arming = 0.0
             return []
@@ -717,6 +778,8 @@ class GestureEngine:
     def _open(self, reason: str, now: float) -> list:
         self.phase = Phase.OPEN
         self.opened_by = reason
+        self.limit = None
+        self.fixed_step = None
         self._arming = 0.0
         self._rebase = True
         self._base_pos = float(self.sel_raw)
@@ -770,7 +833,11 @@ class GestureEngine:
         return [("execute", sel)]
 
     def _step(self, delta: int, now: float, rebase: bool = False) -> list:
-        self.sel_raw += delta
+        target = self._clamp(self.sel_raw + delta)
+        if target == self.sel_raw:
+            return []                          # at the end of a slides / video ring
+        self.sel_raw = target
+        self._frac = 0.0
         self.position = float(self.sel_raw)
         self._base_pos = self.position
         if rebase:
@@ -862,7 +929,7 @@ class GestureEngine:
             self._need_unpoint = False
         if not self.gripping:
             self._rebase = True                      # re-grip picks up from wherever the hand is then
-            self.position = float(self.sel_raw)
+            self.position = self.sel_raw + self._frac
             if self.pointing and not self._need_unpoint and now - self._point_since >= 0.08:
                 return self._execute(now)
             return []
@@ -874,20 +941,68 @@ class GestureEngine:
         events: list = []
         off = raw - self.sel_raw
         if abs(off) > 0.5 + max(0.0, s.detent_force):
-            self.sel_raw = int(round(raw))
-            self._interacted = True
-            self._sel_since = now
-            events.append(("select", self.selected))
+            target = self._clamp(int(round(raw)))
+            if target != self.sel_raw:
+                self.sel_raw = target
+                self._frac = 0.0
+                self._interacted = True
+                self._sel_since = now
+                events.append(("select", self.selected))
+            elif self.limit is not None:
+                # Turned past the end: let the knob go there with the hand without dragging the ring along.
+                self._base_angle = self._ang
+                self._base_pos = float(self.sel_raw)
             off = raw - self.sel_raw
         # Resistance: the ring strains a little toward the hand, then clicks over to the next item.
         self.position = self.sel_raw + 0.3 * math.tanh(off / 0.6)
         return events
+
+    def _update_volume(self, tracked: bool, now: float) -> list:
+        """Index and middle finger up, the others curled: slide the hand up for louder, down for quieter,
+        like a fader. Works whether the rotary is closed or open (in any ring)."""
+        s = self.s
+        f = self._f
+        ok = (s.volume_slide and tracked and f is not None and self.two_up and f.in_frame
+              and f.scale >= s.min_hand_size and f.upright_dev <= 70.0
+              and not (s.ignore_near_face and f.at_face))
+        if not ok:
+            self.sliding = False
+            self._vol_anchor = None
+            return []
+        if now - self._two_since < 0.2:          # settle into the pose before it starts sliding
+            return []
+        y = self._cy
+        if self._vol_anchor is None:
+            self._vol_anchor = y
+            self.sliding = True
+            return []
+        unit = max(s.volume_distance, 0.02) * max(self._scale, 1e-4)
+        steps = int((self._vol_anchor - y) / unit)          # up the screen (y shrinks) = louder
+        if steps == 0:
+            return []
+        self._vol_anchor -= steps * unit
+        return [("volume", steps)]
 
     def _update_open(self, tracked: bool, now: float) -> list:
         s = self.s
         events: list = []
         pinch_edge, self._pinch_edge = self._pinch_edge, False
 
+        if tracked and self.two_up:
+            # The volume slider has the hand: the ring holds still and picks up afresh afterwards.
+            self._seen_open = True
+            self._lost_since = None
+            self._back_since = None
+            self._rebase = True
+            self._sel_since = now
+            self._last_interaction = now
+            self._dwell = 0.0
+            self._push = 0.0
+            self._lean = 0.0
+            self._scroll_dir = 0
+            if not self._grip_mode:
+                self.position = self.sel_raw + self._frac
+            return events
         if tracked:
             self._seen_open = True
             self._lost_since = None
@@ -932,16 +1047,24 @@ class GestureEngine:
                     lean = delta_deg / self.step_degrees
                 events += self._tilt_scroll(lean, now)
                 # the ring leans a little toward the tilt so you can see it coming
-                self.position = self.sel_raw - max(-1.0, min(1.0, self._lean)) * 0.45
+                self.position = self.sel_raw + self._frac - max(-1.0, min(1.0, self._lean)) * 0.45
             else:
                 self._lean = 0.0
                 self.position = self._base_pos - delta_deg / self.step_degrees
+                if self.limit is not None:
+                    lo, hi = self.limit
+                    if not lo - 0.45 <= self.position <= hi + 0.45:
+                        self.position = max(lo - 0.45, min(hi + 0.45, self.position))
+                        self._rebase = True    # past the end: carry on from here when the hand turns back
                 if abs(self.position - self.sel_raw) > 0.5 + s.detent_hysteresis:
-                    self.sel_raw = int(round(self.position))
-                    self._interacted = True
-                    self._sel_since = now
-                    self._last_interaction = now
-                    events.append(("select", self.selected))
+                    target = self._clamp(int(round(self.position)))
+                    if target != self.sel_raw:
+                        self.sel_raw = target
+                        self._frac = 0.0
+                        self._interacted = True
+                        self._sel_since = now
+                        self._last_interaction = now
+                        events.append(("select", self.selected))
 
             if pinch_edge and s.pinch_click and not self.gripping:
                 return events + self._execute(now)

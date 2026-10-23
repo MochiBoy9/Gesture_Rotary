@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.7.0] — Volume, slides and videos
+
+### New
+- **Volume slider.** Hold up your index and middle finger (the others curled) and slide your hand up for louder,
+  down for quieter, like a fader. It works whether the rotary is closed or open, in any ring, and the rotary holds
+  still meanwhile. The level shows beside the rotary, or on the notch / status pill when it's closed. On Windows
+  the volume changes silently, without the volume flyout appearing over a game.
+- **Slides ring.** Open the rotary over PowerPoint, Google Slides (the site or its app), Keynote, LibreOffice
+  Impress or another slideshow and it turns slides instead: no icons, just a cut between every two slides, a
+  firm click per slide so a small wobble never changes slide, and a hard stop at the first and last slide.
+  PowerPoint and Keynote say how many slides there are; elsewhere the ring simply steps forward and back.
+  Slides change with Page Down / Page Up, like a presentation clicker.
+- **Video ring.** Over YouTube, Netflix, Hulu, VLC or another video player, a full turn of the rotary is the
+  whole video: turn it to find the moment you want. It turns by itself as the video plays and holds still
+  while you turn it, and it stops at the start and the end. The time shows in the middle. Where the system's
+  media controls can't move the video (or say how long it is), each click jumps the player's own seek step.
+- Click the centre (or press Enter, pinch, or point) on a slides or video ring for your usual items.
+- **A mouse button opens the rotary**, from any app, even a full-screen game or video: hold the middle button
+  (the wheel), or pick a side button, under *Accessibility → Keyboard & mouse*. A quick middle click still
+  works as usual.
+- *Controls → Volume, slides and videos* switches the volume slider, the slides ring and the video ring on or off.
+
+### Changed
+- While the rotary is open from the mouse, the keyboard or the notch, the wheel turns it wherever the pointer is,
+  and clicks and scrolls outside it stop at Gesture Rotary instead of reaching the app underneath (on Linux they
+  still reach it). Clicking the rotary or the notch never takes the focus, so full-screen apps and videos stay
+  full screen.
+
 ## [1.6.0] — Automatic updates and grip to turn
 
 ### New
