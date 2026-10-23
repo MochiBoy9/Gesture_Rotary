@@ -52,7 +52,11 @@ def settings_from(cfg: dict | None) -> tuple[str, int, str]:
             password = winapi.unprotect(o["password_dpapi"])
         except Exception:
             password = ""
-    return str(o.get("host") or DEFAULTS["host"]), int(o.get("port") or DEFAULTS["port"]), password
+    try:
+        port = int(o.get("port") or DEFAULTS["port"])
+    except (TypeError, ValueError):
+        port = DEFAULTS["port"]
+    return str(o.get("host") or DEFAULTS["host"]), port, password
 
 
 class OBSClient:

@@ -593,6 +593,8 @@ _det_lock = threading.Lock()
 _det_build = threading.Lock()
 _detected: dict[str, App] | None = None
 _detected_at = 0.0
+_det_bg = False                 # a background rescan is running
+DETECT_TTL = 300.0
 
 
 def _detect_one(spec: Spec, steam: dict) -> App:
@@ -608,15 +610,44 @@ def _detect_one(spec: Spec, steam: dict) -> App:
 
 
 def detect(force: bool = False) -> dict[str, App]:
-    """All catalogue apps (installed or not), cached for a few minutes."""
+    """All catalogue apps (installed or not), cached for a few minutes. Once there's a scan to go on, an old one
+    is still answered straight away while a fresh one runs in the background: the rotary and the settings ask
+    from the UI thread, and a scan of the Start menu and Steam can take a few seconds."""
+    with _det_lock:
+        cached, age = _detected, time.time() - _detected_at
+    if cached is not None and not force:
+        if age >= DETECT_TTL:
+            _rescan_later()
+        return cached
+    return _scan(force)
+
+
+def _rescan_later() -> None:
+    global _det_bg
+    with _det_lock:
+        if _det_bg:
+            return
+        _det_bg = True
+
+    def work():
+        global _det_bg
+        try:
+            _scan(False)
+        except Exception:
+            log.debug("app scan failed", exc_info=True)
+        finally:
+            with _det_lock:
+                _det_bg = False
+
+    threading.Thread(target=work, daemon=True, name="detect").start()
+
+
+def _scan(force: bool) -> dict[str, App]:
     global _detected, _detected_at
     started = time.time()
-    with _det_lock:
-        if _detected is not None and not force and started - _detected_at < 300:
-            return _detected
     with _det_build:            # one scan at a time: anyone else asking meanwhile waits and shares it
         with _det_lock:
-            if _detected is not None and _detected_at >= started - (0 if force else 300):
+            if _detected is not None and _detected_at >= started - (0 if force else DETECT_TTL):
                 return _detected
         try:
             steam = {g.appid: g for g in apps.steam_library()}

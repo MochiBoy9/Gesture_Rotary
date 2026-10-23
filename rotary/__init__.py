@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 T0 = time.perf_counter()          # for the "ready in … ms" line in the log
-__version__ = "1.9.0"
+__version__ = "1.9.1"
 
 WIN = sys.platform == "win32"
 MAC = sys.platform == "darwin"

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import logging
 import math
 import os
@@ -629,6 +630,17 @@ class RotaryApp(QObject):
         """config.json was edited outside the app."""
         if str(CONFIG_PATH) not in self.watcher.files() and CONFIG_PATH.exists():
             self.watcher.addPath(str(CONFIG_PATH))
+        # Half-way through an edit (or a slip in the JSON), keep running on the settings there are: reading it
+        # now would set the broken file aside and start again from the defaults, saved keys and all.
+        try:
+            if not isinstance(json.loads(CONFIG_PATH.read_text(encoding="utf-8")), dict):
+                raise ValueError("not a JSON object")
+        except FileNotFoundError:
+            pass                                 # deleted: start again from the defaults, as at first start
+        except (OSError, ValueError) as e:
+            log.warning("config.json can't be read (%s): keeping the current settings", e)
+            self._flash_msg("config.json has a mistake in it; nothing changed", "error", AMBER, 4.0)
+            return
         self.cfg = load_config()
         self.apply_config(save=False)
         if self.window.built:
@@ -1709,17 +1721,32 @@ class RotaryApp(QObject):
 
 
 # --------------------------------------------------------------------------- entry
+def _instance_key() -> str:
+    """One running copy per person: on macOS and Linux the socket sits in the shared /tmp, so another
+    account's copy mustn't be mistaken for (or get in the way of) this one."""
+    import getpass
+    import hashlib
+    try:
+        who = getpass.getuser()
+    except Exception:
+        who = str(Path.home())
+    return f"{INSTANCE_KEY}-{hashlib.sha1(who.encode('utf-8'), usedforsecurity=False).hexdigest()[:10]}"
+
+
 def _single_instance(app: QApplication) -> QLocalServer | None:
+    key = _instance_key()
     sock = QLocalSocket()
-    sock.connectToServer(INSTANCE_KEY)
+    sock.connectToServer(key)
     if sock.waitForConnected(300):
         sock.write(b"show")
         sock.flush()
         sock.waitForBytesWritten(300)
         return None
-    QLocalServer.removeServer(INSTANCE_KEY)
+    QLocalServer.removeServer(key)
     server = QLocalServer(app)
-    server.listen(INSTANCE_KEY)
+    server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
+    if not server.listen(key):
+        log.warning("couldn't listen for a second copy starting: %s", server.errorString())
     return server
 
 
@@ -1792,6 +1819,7 @@ def main(argv: list[str] | None = None) -> int:
     def on_conn():
         c = server.nextPendingConnection()
         if c:
-            c.readyRead.connect(lambda: rotary.show_window())
+            c.readyRead.connect(lambda: (c.readAll(), rotary.show_window()))
+            c.disconnected.connect(c.deleteLater)
     server.newConnection.connect(on_conn)
     return app.exec()

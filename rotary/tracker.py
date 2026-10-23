@@ -54,10 +54,14 @@ def _load_model(path=MODEL_PATH, url=MODEL_URL) -> bytes:
         path = DATA_DIR / "models" / path.name
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
+        import shutil
         import urllib.request
+
+        from .assist import _ssl_context
         log.info("downloading model from %s", url)
         tmp = path.with_suffix(".part")
-        urllib.request.urlretrieve(url, tmp)
+        with urllib.request.urlopen(url, timeout=30, context=_ssl_context()) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f)
         tmp.replace(path)
     return path.read_bytes()
 
@@ -256,7 +260,8 @@ class TrackerThread(QThread):
         ts = max(int(t_cap * 1000), self._last_ts + 1)
         self._last_ts = ts
         t0 = time.perf_counter()
-        res = landmarker.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), ts)
+        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)     # shared by both models
+        res = landmarker.detect_for_video(image, ts)
         infer_ms = (time.perf_counter() - t0) * 1000
 
         h, w = rgb.shape[:2]
@@ -265,7 +270,7 @@ class TrackerThread(QThread):
             faces_box["n"] += 1
             if faces_box["n"] % 3 == 1:
                 try:
-                    fr = face_det.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), ts)
+                    fr = face_det.detect_for_video(image, ts)
                     faces_box["faces"] = [(d.bounding_box.origin_x / w, d.bounding_box.origin_y / h,
                               (d.bounding_box.origin_x + d.bounding_box.width) / w,
                               (d.bounding_box.origin_y + d.bounding_box.height) / h) for d in fr.detections]

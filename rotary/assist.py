@@ -12,11 +12,14 @@ The answer comes back as JSON: whether there's a question at all, the option to 
 from __future__ import annotations
 
 import base64
+import functools
+import ipaddress
 import json
 import logging
 import re
 import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
@@ -65,6 +68,7 @@ BY_ID = {p.id: p for p in PROVIDERS}
 DEFAULTS = {"provider": "gemini", "models": {}, "urls": {}, "keys": {}, "seconds": 20,
             "hotkey": "ctrl+alt+a" if MAC else "win+alt+a"}
 TIMEOUT = 90.0
+MAX_REPLY = 32_000_000   # bytes: no AI answer (or list of models) comes anywhere near this
 ANTHROPIC_VERSION = "2026-10-21"
 # Claude models that accept "fallbacks": "default": when one declines a screenshot, the API answers with another.
 ANTHROPIC_FALLBACK = ("claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5")
@@ -274,7 +278,9 @@ def parse_reply(text: str) -> Answer:
     return ans
 
 
+@functools.lru_cache(maxsize=1)
 def _ssl_context() -> ssl.SSLContext:
+    """One context for every HTTPS call (screen assist, updates, weather): loading the CA list each time is slow."""
     try:
         import certifi                       # comes with MediaPipe; the packaged Mac app has no system CA path
         return ssl.create_default_context(cafile=certifi.where())
@@ -295,15 +301,43 @@ def _error_message(raw: bytes) -> str:
     return str(err or "")[:160]
 
 
+def is_local(url: str) -> bool:
+    """An address on this computer or the local network (Ollama, LM Studio…), where plain http is normal."""
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if not host:
+        return False
+    if host == "localhost" or host.endswith((".local", ".localhost", ".lan", ".home.arpa")):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return "." not in host and not host.isdigit()     # a machine on the network by its name: "gpu-box"
+    return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
+SECRET_HEADERS = ("authorization", "x-api-key", "x-goog-api-key")
+
+
+def check_address(url: str, headers: dict, p: Provider) -> None:
+    """Never send an API key in the clear: over the internet it has to be https."""
+    scheme = urllib.parse.urlsplit(url).scheme.lower()
+    if scheme not in ("http", "https"):
+        raise AssistError(f"{p.name}'s address has to start with https://")
+    has_key = any(k.lower() in SECRET_HEADERS and v for k, v in headers.items())
+    if scheme == "http" and has_key and not is_local(url):
+        raise AssistError(f"{p.name}'s address has to start with https:// to send your API key safely")
+
+
 def post(url: str, headers: dict, body: dict | None, p: Provider, model: str = "", timeout: float = TIMEOUT) -> dict:
     """POST `body` as JSON, or GET when there's no body; the reply's JSON, or an AssistError in words."""
+    check_address(url, headers, p)
     data = None if body is None else json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="GET" if body is None else "POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as r:
-            return json.loads(r.read().decode("utf-8"))
+            got = json.loads(r.read(MAX_REPLY).decode("utf-8"))
     except urllib.error.HTTPError as e:
-        msg = _error_message(e.read() or b"")
+        msg = _error_message(e.read(64_000) or b"")
         log.info("%s answered %s: %s", p.name, e.code, msg)
         if e.code in (401, 403):
             raise AssistError(f"{p.name} refused the API key") from None
@@ -326,6 +360,18 @@ def post(url: str, headers: dict, body: dict | None, p: Provider, model: str = "
         raise AssistError(f"{p.name} took too long to answer") from None
     except ValueError:
         raise AssistError(f"{p.name} sent something that isn't JSON") from None
+    except OSError as e:                       # the connection dropped halfway through the answer
+        raise AssistError(f"Couldn't reach {p.name} ({e})") from None
+    if not isinstance(got, dict):
+        raise AssistError(f"{p.name} sent an answer it couldn't read")
+    return got
+
+
+def _int(v) -> int:
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def solve(image: bytes, cfg: dict | None, mime: str = "image/jpeg") -> Answer:
@@ -363,9 +409,11 @@ def list_models(cfg: dict | None, p: Provider | None = None, timeout: float = 20
         headers["anthropic-version"] = ANTHROPIC_VERSION
         after = ""
         for _page in range(10):
-            data = post(f"{base}/v1/models?limit=1000" + (f"&after_id={after}" if after else ""), headers, None, p,
-                        timeout=timeout)
+            data = post(f"{base}/v1/models?limit=1000" + (f"&after_id={urllib.parse.quote(after)}" if after else ""),
+                        headers, None, p, timeout=timeout)
             for m in data.get("data") or []:
+                if not isinstance(m, dict) or not m.get("id"):
+                    continue
                 caps = m.get("capabilities") or {}
                 if (caps.get("image_input") or {}).get("supported", True):
                     out.append((str(m["id"]), str(m.get("display_name") or m["id"])))
@@ -378,9 +426,11 @@ def list_models(cfg: dict | None, p: Provider | None = None, timeout: float = 20
             headers["x-goog-api-key"] = key
         token = ""
         for _page in range(10):
-            data = post(f"{base}/models?pageSize=1000" + (f"&pageToken={token}" if token else ""), headers, None, p,
-                        timeout=timeout)
+            data = post(f"{base}/models?pageSize=1000" + (f"&pageToken={urllib.parse.quote(token)}" if token else ""),
+                        headers, None, p, timeout=timeout)
             for m in data.get("models") or []:
+                if not isinstance(m, dict):
+                    continue
                 mid = str(m.get("name", "")).removeprefix("models/")
                 if ("generateContent" in (m.get("supportedGenerationMethods") or [])
                         and mid and not _GEMINI_SKIP.search(mid)):
@@ -391,12 +441,15 @@ def list_models(cfg: dict | None, p: Provider | None = None, timeout: float = 20
         return out
     if p.style == "ollama":
         data = post(f"{base}/api/tags", headers, None, p, timeout=timeout)
-        return [(str(m["name"]), str(m["name"])) for m in data.get("models") or [] if m.get("name")]
+        return [(str(m["name"]), str(m["name"])) for m in data.get("models") or []
+                if isinstance(m, dict) and m.get("name")]
     if key:
         headers["Authorization"] = f"Bearer {key}"
     data = post(f"{base}/models", headers, None, p, timeout=timeout)
     rows = []
     for m in data.get("data") or []:
+        if not isinstance(m, dict):
+            continue
         mid = str(m.get("id") or "")
         if not mid:
             continue
@@ -406,7 +459,7 @@ def list_models(cfg: dict | None, p: Provider | None = None, timeout: float = 20
                 continue
         elif _NOT_CHAT.search(mid):
             continue
-        rows.append((-int(m.get("created") or 0), mid, str(m.get("name") or mid)))
+        rows.append((-_int(m.get("created")), mid, str(m.get("name") or mid)))
     return [(mid, name) for _c, mid, name in sorted(rows)]
 
 

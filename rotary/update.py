@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass, field
@@ -40,6 +41,11 @@ SUMS = "SHA256SUMS.txt"
 CHECK_HOURS = 6
 WORK = DATA_DIR / "updates"            # downloads and unpacking; emptied before each update
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# Updates come only from GitHub, over https (release downloads redirect to its file servers, which have
+# changed name over the years: objects., release-assets., github-releases.githubusercontent.com).
+TRUSTED_HOSTS = ("github.com", "api.github.com")
+TRUSTED_DOMAIN = ".githubusercontent.com"
+MAX_DOWNLOAD = 1_500_000_000          # bytes: far more than any release file
 
 
 class UpdateError(Exception):
@@ -77,10 +83,22 @@ def is_newer(latest: str, current: str = __version__) -> bool:
 
 
 # --------------------------------------------------------------------------- GitHub
+def trusted(url: str) -> bool:
+    u = urllib.parse.urlsplit(str(url))
+    host = (u.hostname or "").lower()
+    return u.scheme == "https" and (host in TRUSTED_HOSTS or host.endswith(TRUSTED_DOMAIN))
+
+
 def _get(url: str, timeout: float, accept: str = "application/octet-stream"):
     from .assist import _ssl_context
+    if not trusted(url):
+        raise UpdateError(f"Refused to download from {urllib.parse.urlsplit(str(url)).hostname or url}")
     req = urllib.request.Request(url, headers={"User-Agent": f"GestureRotary/{__version__}", "Accept": accept})
-    return urllib.request.urlopen(req, timeout=timeout, context=_ssl_context())
+    r = urllib.request.urlopen(req, timeout=timeout, context=_ssl_context())
+    if not trusted(r.geturl()):                      # where a redirect ended up
+        r.close()
+        raise UpdateError(f"Refused to download from {urllib.parse.urlsplit(r.geturl()).hostname}")
+    return r
 
 
 def parse_release(data: dict) -> Release:
@@ -88,14 +106,18 @@ def parse_release(data: dict) -> Release:
     if not tag or data.get("draft") or data.get("prerelease"):
         raise UpdateError("GitHub has no finished release yet")
     assets = {str(a.get("name")): str(a.get("browser_download_url"))
-              for a in data.get("assets") or [] if a.get("name") and a.get("browser_download_url")}
+              for a in data.get("assets") or []
+              if isinstance(a, dict) and a.get("name") and a.get("browser_download_url")}
     return Release(tag.lstrip("vV"), str(data.get("html_url") or RELEASES_PAGE), assets)
 
 
 def fetch_latest(timeout: float = 15) -> Release:
     try:
         with _get(LATEST_URL, timeout, "application/vnd.github+json") as r:
-            return parse_release(json.loads(r.read().decode("utf-8")))
+            data = json.loads(r.read(5_000_000).decode("utf-8"))
+        if not isinstance(data, dict):
+            raise UpdateError("GitHub sent a release it couldn't read")
+        return parse_release(data)
     except UpdateError:
         raise
     except Exception as e:
@@ -157,7 +179,9 @@ def download(release: Release, folder: Path | None, progress=None) -> Path:
     WORK.mkdir(parents=True, exist_ok=True)
     try:
         with _get(release.assets[SUMS], 30) as r:
-            want = parse_sums(r.read().decode("utf-8", "replace")).get(name)
+            want = parse_sums(r.read(1_000_000).decode("utf-8", "replace")).get(name)
+    except UpdateError:
+        raise
     except Exception as e:
         raise UpdateError(f"Couldn't download the update ({getattr(e, 'reason', e)})") from None
     if not want:
@@ -167,14 +191,22 @@ def download(release: Release, folder: Path | None, progress=None) -> Path:
     try:
         with _get(release.assets[name], 60) as r, open(dest, "wb") as f:
             total = int(r.headers.get("Content-Length") or 0)
+            if total > MAX_DOWNLOAD:
+                raise UpdateError("The update is far bigger than it should be, so it wasn't downloaded")
             done = 0
             while chunk := r.read(1 << 16):
                 f.write(chunk)
                 h.update(chunk)
                 done += len(chunk)
+                if done > MAX_DOWNLOAD:
+                    raise UpdateError("The update is far bigger than it should be, so it was thrown away")
                 if progress and total:
-                    progress(done / total)
+                    progress(min(1.0, done / total))
+    except UpdateError:
+        dest.unlink(missing_ok=True)
+        raise
     except Exception as e:
+        dest.unlink(missing_ok=True)
         raise UpdateError(f"Couldn't download the update ({getattr(e, 'reason', e)})") from None
     if h.hexdigest() != want:
         dest.unlink(missing_ok=True)
@@ -274,21 +306,29 @@ rm -rf "$new"
 """
 
 
+def _cmd_path(p: Path) -> str:
+    """A path for a .cmd file: a % in it would otherwise be read as a variable."""
+    return str(p).replace("%", "%%")
+
+
 def windows_script(staged: Staged, pid: int, exe: Path, args: list[str]) -> str:
-    folder, old = staged.folder, staged.folder.parent / f".{staged.folder.name}.old"
+    q = _cmd_path
+    folder, old = q(staged.folder), q(staged.folder.parent / f".{staged.folder.name}.old")
+    path, exe = q(staged.path), q(exe)
     lines = ["@echo off",
+             "chcp 65001 >nul",              # the script is UTF-8: a user folder with accents stays right
              f'powershell -NoProfile -Command "Wait-Process -Id {pid} -Timeout 60 -ErrorAction SilentlyContinue"']
     if staged.kind == "setup":
         # Inno Setup upgrades the same folder (same AppId) and keeps the tasks chosen the first time.
-        lines.append(f'"{staged.path}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /NOCANCEL')
+        lines.append(f'"{path}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /NOCANCEL')
     else:
         lines += [f'if exist "{old}" rmdir /s /q "{old}"',
                   f'move "{folder}" "{old}" >nul || goto start',
-                  f'move "{staged.path}" "{folder}" >nul || (move "{old}" "{folder}" >nul & goto start)',
+                  f'move "{path}" "{folder}" >nul || (move "{old}" "{folder}" >nul & goto start)',
                   f'rmdir /s /q "{old}"']
     lines.append(":start")
     if staged.kind != "setup":
-        lines.append(f'if exist "{staged.path}" rmdir /s /q "{staged.path}"')     # a swap that didn't happen
+        lines.append(f'if exist "{path}" rmdir /s /q "{path}"')     # a swap that didn't happen
     lines.append(f'start "" "{exe}" {" ".join(args)}')
     return "\r\n".join(lines) + "\r\n"
 

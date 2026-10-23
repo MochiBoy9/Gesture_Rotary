@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.9.1] — Stability and security
+
+### Fixed
+- **Settings are no longer reset by a half-saved config.json.** Editing it by hand and saving a typo (or an
+  editor saving in two steps) used to set the file aside and start over from the defaults, saved API keys and
+  all; now the app keeps running on the settings it has and says the file has a mistake in it.
+- A *Command*, *PowerShell* or *Python* item that keeps running and writes a lot of errors no longer hangs, and
+  when one fails after printing a lot, the message shows the error it ended with.
+- The weather on the rotary works in the packaged Mac app (it couldn't check the server's certificate).
+- Opening a Quick nav ring or the Apps page no longer freezes for a few seconds every five minutes while the
+  installed apps are looked up again; the last scan answers straight away and a new one runs in the background.
+- Windows: updates from this version on also work when the user folder has an accent or a % in its name.
+- macOS and Linux: two people signed in on one computer can each run Gesture Rotary.
+- Windows: shortcut icons resolve for user names with an apostrophe (C:\Users\O'Brien).
+- An OBS port that isn't a number, and odd model lists from AI services, no longer cause errors.
+
+### Security
+- Screen assist never sends an API key over plain http to the internet: a custom address has to be https, unless
+  it's this computer or the local network (Ollama, LM Studio, a machine on your network by its name).
+- Updates download only from GitHub over https, redirects included, and a download that's far too big is refused.
+- config.json is readable only by you on macOS and Linux (where there's no keyring it can hold the OBS password
+  and AI keys).
+
+### Faster
+- The notch's and the rotary's live glass isn't worked out again when nothing behind them has changed.
+- Live activities make one list of running programs every two seconds instead of three; HTTPS connections share
+  one certificate store instead of loading it each time; each camera frame is handed to MediaPipe once.
+
 ## [1.9.0] — Liquid glass
 
 ### New
