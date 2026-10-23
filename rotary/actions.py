@@ -147,6 +147,7 @@ DEFAULT_CONFIG = {
         "notch": "auto",             # auto (when there's no camera) | on | off
         "notch_peek": False,         # tuck the notch away until the mouse reaches the top
         "notch_hide_fullscreen": True,
+        "auto_update": True,         # install new releases from GitHub by itself (update.py)
     },
     "island": {                  # what the notch shows, Dynamic-Island style
         "clock": "time",         # off | time | date

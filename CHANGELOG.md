@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased] — Automatic updates
+
+### New
+- **Gesture Rotary updates itself.** It checks GitHub for a newer release a minute after it starts and every six
+  hours after that. A new version downloads in the background, is checked against the release's checksums, and
+  installs when the rotary isn't in use: the app restarts into it with your settings, and the notch says
+  *Updated to Gesture Rotary …*.
+  - Windows: the Setup.exe install upgrades silently in place; the portable folder is replaced.
+  - macOS: the app in Applications is replaced. Linux: `install.sh`'s copy is replaced.
+  - If anything goes wrong, the old version stays and starts again.
+- *General → Updates*: turn *Update automatically* off, or *Check now* to update right away.
+
 ## [1.5.1] — MIT License
 
 ### New

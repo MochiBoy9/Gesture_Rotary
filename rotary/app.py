@@ -18,7 +18,7 @@ from PySide6.QtGui import (QAction, QActionGroup, QColor, QGuiApplication, QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
-from . import DATA_DIR, MAC, T0, WIN, assist, integrations, system, winapi
+from . import DATA_DIR, MAC, T0, WIN, __version__, assist, integrations, system, update, winapi
 from .actions import (CONFIG_PATH, back_item, build_items, cleanup_scripts, execute, item_from, load_config,
                       save_config)
 from .feedback import Sounds, Speaker
@@ -204,6 +204,8 @@ class RotaryApp(QObject):
     action_done = Signal(str, bool, str)   # item name, ok, error
     dynamic_ready = Signal(str)            # an app's games / scenes / projects were refreshed
     assist_done = Signal(object, str)      # screen assist: the Answer (or None), error
+    update_done = Signal(object, object, str)  # update check: newer Release (or None), Staged (or None), error
+    update_state = Signal(str)             # what General → Updates says
 
     def __init__(self, app: QApplication, show_window: bool | None = None):
         super().__init__()
@@ -286,6 +288,27 @@ class RotaryApp(QObject):
         self.action_done.connect(self._on_action_done)
         self.dynamic_ready.connect(self._on_dynamic)
         self.assist_done.connect(self._on_assist_done)
+        self.update_done.connect(self._on_update_done)
+        self.update_note = ""
+        self._update_busy = False
+        self._update_manual = False
+        self._staged: update.Staged | None = None
+        self._update_timer = QTimer(self)                 # check again every few hours
+        self._update_timer.setInterval(update.CHECK_HOURS * 3600 * 1000)
+        self._update_timer.timeout.connect(self.check_for_updates)
+        self._apply_timer = QTimer(self)                  # an update waits for the rotary to be put away
+        self._apply_timer.setSingleShot(True)
+        self._apply_timer.setInterval(60_000)
+        self._apply_timer.timeout.connect(self._apply_update)
+        gen = self.cfg.setdefault("general", {})
+        last = gen.get("last_version")
+        if last != __version__:
+            gen["last_version"] = __version__
+            install_changed = True
+            if last and update.is_newer(__version__, last):
+                log.info("updated from %s to %s", last, __version__)
+                QTimer.singleShot(1500, lambda: self._flash_msg(f"Updated to Gesture Rotary {__version__}",
+                                                                "done", GREEN, 4.0))
 
         from .ui.settings import MainWindow
         self.window = MainWindow(self)
@@ -308,6 +331,9 @@ class RotaryApp(QObject):
             self.engine.paused = True
         threading.Thread(target=self.refresh_apps, daemon=True, name="apps").start()
         threading.Thread(target=cleanup_scripts, daemon=True).start()
+        threading.Thread(target=update.cleanup, daemon=True, name="update-cleanup").start()
+        self._update_timer.start()
+        QTimer.singleShot(60_000, self.check_for_updates)
         self._update_notch()
         self._update_pill()
         onboarded = self.cfg.get("general", {}).get("onboarded", False)
@@ -763,6 +789,88 @@ class RotaryApp(QObject):
             self._update_pill()
         else:                                            # the notch is switched off: the status pill says it
             self._flash_msg(ans.headline(), "done", GREEN, seconds)
+
+    # ------------------------------------------------------------ updates
+    def _set_update_note(self, text: str) -> None:
+        self.update_note = text
+        self.update_state.emit(text)
+
+    def check_for_updates(self, manual: bool = False) -> None:
+        """Every few hours (General → Updates → Update automatically), or Check now: if GitHub has a newer
+        release, download it in the background and install it."""
+        if self._update_busy or self.quitting:
+            return
+        if not manual and not self.cfg.get("general", {}).get("auto_update", True):
+            return
+        if self._staged is not None:                     # downloaded already, waiting for a quiet moment
+            if manual:
+                self._update_manual = True
+                self._apply_update()
+            return
+        self._update_busy = True
+        self._update_manual = manual
+        self._set_update_note("Checking for updates…")
+        shown = [-1]
+
+        def progress(frac: float) -> None:
+            pct = int(frac * 100)
+            if pct != shown[0]:
+                shown[0] = pct
+                self.update_state.emit(f"Downloading the update… {pct}%")
+
+        def work():
+            try:
+                self.update_done.emit(*update.check_and_prepare(progress), "")
+            except update.UpdateError as e:
+                self.update_done.emit(None, None, str(e))
+            except Exception:
+                log.exception("update failed")
+                self.update_done.emit(None, None, "The update failed (details in the log)")
+        threading.Thread(target=work, daemon=True, name="update").start()
+
+    def _on_update_done(self, release, staged, err: str) -> None:
+        self._update_busy = False
+        if err:
+            log.info("update: %s", err)
+            self._set_update_note(err)
+            if self._update_manual:
+                self._flash_msg(err[:110], "error", AMBER, 5.0)
+            return
+        if release is None:
+            self._set_update_note(f"Gesture Rotary {__version__} is the latest version")
+            return
+        if staged is None:                               # running from source, or a folder it can't change
+            self._set_update_note(f"Version {release.version} is out. {update.unsupported()}.")
+            return
+        self._staged = staged
+        self._set_update_note(f"Version {staged.version} is ready; it installs when the rotary isn't in use")
+        self._apply_update()
+
+    def _apply_update(self) -> None:
+        """Install the downloaded update and restart, once nobody's using the rotary (or right away for
+        Check now). The app quits; a small script swaps the new version in and starts it again."""
+        staged = self._staged
+        if staged is None or self.quitting:
+            return
+        manual = self._update_manual
+        if not manual and not self.cfg.get("general", {}).get("auto_update", True):
+            return
+        busy = (self.engine.phase == Phase.OPEN or self.keyboard_session or self._assist_busy
+                or self._calib is not None or (not manual and self.window.isActiveWindow()))
+        if busy:
+            self._apply_timer.start()
+            return
+        showing = self.window.isVisible() and not self.window.isMinimized()
+        try:
+            update.apply(staged, ["--show"] if showing else ["--minimized"])
+        except Exception as e:
+            log.warning("couldn't start the update", exc_info=True)
+            self._staged = None
+            self._set_update_note(f"Couldn't install version {staged.version} ({e})")
+            return
+        self._set_update_note(f"Updating to {staged.version}…")
+        self._flash_msg(f"Updating to Gesture Rotary {staged.version}…", "pulse", BLUE, 5.0)
+        QTimer.singleShot(900, self.quit)
 
     # ------------------------------------------------------------ quick nav levels
     def _enter_quicknav(self, item) -> None:

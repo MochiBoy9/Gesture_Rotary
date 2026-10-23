@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QStackedWidget,
                                QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
-from .. import DATA_DIR, DEVICE, MAC, OS_NAME, ROOT, WIN, __version__, apps, integrations, obs, system, winapi
+from .. import DATA_DIR, DEVICE, MAC, OS_NAME, ROOT, WIN, __version__, apps, integrations, obs, system, update, winapi
 from .. import assist as ai
 from ..actions import open_target
 from ..actions import ACTION_TYPES, ASSIST_ITEM, CONFIG_PATH, MEDIA_PRESETS, Item, build_items
@@ -2344,6 +2344,19 @@ class GeneralPage(QWidget):
         self.python.setFixedWidth(300)
         self.python.changed.connect(lambda k: self.set("general", "python", k))
         c.add(Row("Python for code actions", "Your own Python has your packages", self.python))
+        v.addWidget(c)
+
+        c = Card("Updates")
+        self.auto_update = Switch(gen.get("auto_update", True))
+        self.auto_update.toggled.connect(lambda on: self.set("general", "auto_update", on))
+        c.add(Row("Update automatically", "When a new version is out, download it from GitHub and restart into it "
+                  "while the rotary isn't in use", self.auto_update))
+        b = QPushButton("Check now")
+        b.clicked.connect(lambda: self.app.check_for_updates(manual=True))
+        why = update.unsupported()
+        row = Row("Check for updates", self.app.update_note or why or f"You have version {__version__}", b)
+        self.app.update_state.connect(row.subtitle.setText)
+        c.add(row)
         v.addWidget(c)
 
         c = Card("About")
