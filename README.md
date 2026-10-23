@@ -60,7 +60,9 @@ running from source, it just says a new version is out.
 | **Hold your palm still** (3 s by default, as low as 0.5 s) | Opens |
 | **Lean** your hand (Tilt), **slide** it (Move), or **turn** it (Follow), then hold | Keeps scrolling until you straighten or return to the middle |
 | **Point** with your index finger, move it aside, hold | Scrolls; **push** toward the camera to click |
-| Fist: choose, then **let go** · **pinch** · **hold still** on an item | Launches |
+| **Fist**: **tilt** it like turning a knob | Turns one firm click per item and stays there. Open your hand briefly and close it again to re-grip without moving the ring |
+| Fist: **point** your index finger | Launches the selected item |
+| Open hand for 1.5 s | Back to palm mode: **pinch** or **hold still** on an item launches |
 | Back of the hand, or lower it | Closes |
 | **Ctrl + Alt + Space** (Mac: **⌃⌥Space**) | Opens from the keyboard: ← → move, Enter launches, Esc closes |
 
