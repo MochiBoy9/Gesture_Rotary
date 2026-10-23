@@ -15,8 +15,8 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QObject, QFileSystemWatcher, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import (QAction, QActionGroup, QColor, QFont, QFontMetricsF, QGuiApplication, QIcon,
-                           QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QTransform)
+from PySide6.QtGui import (QAction, QActionGroup, QBrush, QColor, QConicalGradient, QFont, QFontMetricsF,
+                           QGuiApplication, QIcon, QLinearGradient, QPainter, QPen, QPixmap, QRadialGradient)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
@@ -125,29 +125,14 @@ class HotkeyWindow(QWidget):
 
 
 # --------------------------------------------------------------------------- icons
-def _hand_path(cx: float, cy: float, h: float) -> QPainterPath:
-    """An open palm, fingers up, `h` tall and centred on (cx, cy): the gesture that drives the rotary."""
-    k = h / 24.0
-    x0, y0 = cx - 13 * k, cy - 12 * k            # drawn on a 24 × 24 grid (a little left: the thumb)
-    path = QPainterPath()
-    path.addRoundedRect(QRectF(x0 + 5.2 * k, y0 + 11 * k, 13.6 * k, 13 * k), 5 * k, 5 * k)      # palm
-    for x, length, tilt in ((6.8, 9.0, -10), (10.1, 11.6, -3.5), (13.4, 12.0, 3), (16.6, 9.8, 10)):
-        finger = QPainterPath()                                                                    # fingers
-        finger.addRoundedRect(QRectF(-1.55 * k, -length * k, 3.1 * k, (length + 2) * k), 1.55 * k, 1.55 * k)
-        path = path.united(QTransform().translate(x0 + x * k, y0 + 13 * k).rotate(tilt).map(finger))
-    thumb = QPainterPath()
-    thumb.addRoundedRect(QRectF(-1.75 * k, -8.5 * k, 3.5 * k, 10.5 * k), 1.75 * k, 1.75 * k)
-    thumb = QTransform().translate(x0 + 17.2 * k, y0 + 19 * k).rotate(48).map(thumb)
-    return path.united(thumb)
-
-
 # The ring of items on the app icon, clockwise from 12 o'clock (that one is the selected item).
 ICON_DOTS = ["#0A84FF", "#30D158", "#FFD60A", "#FF9F0A", "#FF375F", "#BF5AF2", "#5E5CE6", "#64D2FF"]
 
 
 def _icon_pixmap(px: int, active: bool = True, tile: bool = True) -> QPixmap:
-    """App icon: the rotary itself (a glass ring of coloured items, the top one selected) around an open
-    hand. The tray version stays a plain ring with the selection lens, which still reads at 16 px."""
+    """App icon: the rotary itself: a glass ring of coloured items turning to the one at the top, under
+    the selection lens, around the glass hub that names it. The tray version is a plain ring with the
+    lens, which still reads at 16 px."""
     pm = QPixmap(px, px)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
@@ -174,6 +159,15 @@ def _icon_pixmap(px: int, active: bool = True, tile: bool = True) -> QPixmap:
         p.setPen(QPen(QColor(255, 255, 255, 70), 0.8 * s))
         p.drawEllipse(c, r + 4.75 * s, r + 4.75 * s)
         p.drawEllipse(c, r - 4.75 * s, r - 4.75 * s)
+        # A trail behind the selection: the ring has just turned to it.
+        trail = QConicalGradient(c, 90)
+        trail.setColorAt(0.0, QColor(10, 132, 255, 230))
+        trail.setColorAt(0.2, QColor(10, 132, 255, 0))
+        trail.setColorAt(1.0, QColor(10, 132, 255, 0))
+        pen = QPen(QBrush(trail), 3.2 * s)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawArc(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r), 90 * 16, 70 * 16)
         p.setPen(Qt.PenStyle.NoPen)
         n = len(ICON_DOTS)
         for i, col in enumerate(ICON_DOTS[1:], 1):
@@ -188,15 +182,20 @@ def _icon_pixmap(px: int, active: bool = True, tile: bool = True) -> QPixmap:
         p.drawEllipse(top, 6.8 * s, 6.8 * s)
         p.setBrush(QColor(ICON_DOTS[0]) if active else QColor("#8E8E93"))
         p.drawEllipse(top, 5.2 * s, 5.2 * s)
-        # The open hand in the middle.
-        hand = _hand_path(c.x(), c.y() + 0.5 * s, 19.5 * s)
-        p.setBrush(QColor(0, 0, 0, 60))
-        p.drawPath(hand.translated(0, 1.0 * s))
-        hg = QLinearGradient(0, c.y() - 9 * s, 0, c.y() + 10 * s)
-        hg.setColorAt(0, QColor("white"))
-        hg.setColorAt(1, QColor("#dfe3f2"))
-        p.setBrush(hg)
-        p.drawPath(hand)
+        # The centre, as on the real rotary: a glass hub holding the chosen item's name.
+        p.setBrush(QColor(0, 0, 0, 70))
+        p.drawEllipse(c + QPointF(0, 1.0 * s), 11.5 * s, 11.5 * s)
+        hub = QLinearGradient(0, c.y() - 11.5 * s, 0, c.y() + 11.5 * s)
+        hub.setColorAt(0, QColor(255, 255, 255, 70))
+        hub.setColorAt(1, QColor(255, 255, 255, 22))
+        p.setBrush(hub)
+        p.setPen(QPen(QColor(255, 255, 255, 110), 0.8 * s))
+        p.drawEllipse(c, 11.5 * s, 11.5 * s)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("white"))
+        p.drawRoundedRect(QRectF(c.x() - 6 * s, c.y() - 3.4 * s, 12 * s, 3.2 * s), 1.6 * s, 1.6 * s)
+        p.setBrush(QColor(255, 255, 255, 140))
+        p.drawRoundedRect(QRectF(c.x() - 4 * s, c.y() + 1.4 * s, 8 * s, 2.2 * s), 1.1 * s, 1.1 * s)
         p.end()
         return pm
     c = QPointF(32 * s, 33 * s)
