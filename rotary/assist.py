@@ -304,12 +304,14 @@ def _error_message(raw: bytes) -> str:
 def is_local(url: str) -> bool:
     """An address on this computer or the local network (Ollama, LM Studio…), where plain http is normal."""
     host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if not host:
+        return False
     if host == "localhost" or host.endswith((".local", ".localhost", ".lan", ".home.arpa")):
         return True
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
-        return False
+        return "." not in host and not host.isdigit()     # a machine on the network by its name: "gpu-box"
     return ip.is_loopback or ip.is_private or ip.is_link_local
 
 

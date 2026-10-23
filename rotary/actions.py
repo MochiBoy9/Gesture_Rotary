@@ -434,8 +434,9 @@ def _run_checked(args: list[str], what: str, grace: float = 4.0, err_file: Path 
         if err_file is not None and err_file.exists():
             err = err_file.read_text(encoding="utf-8", errors="replace")
         if not err:
-            errs.seek(0)
-            err = errs.read(256_000).decode("utf-8", "replace")
+            size = errs.seek(0, os.SEEK_END)
+            errs.seek(max(0, size - 256_000))       # the end: that's where the error itself is
+            err = errs.read().decode("utf-8", "replace")
     lines = [ln for ln in err.strip().splitlines() if ln.strip()]
     raise RuntimeError(f"{what} failed: {lines[-1] if lines else f'exit code {rc}'}")
 

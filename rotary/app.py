@@ -1730,7 +1730,7 @@ def _instance_key() -> str:
         who = getpass.getuser()
     except Exception:
         who = str(Path.home())
-    return f"{INSTANCE_KEY}-{hashlib.sha1(who.encode('utf-8')).hexdigest()[:10]}"
+    return f"{INSTANCE_KEY}-{hashlib.sha1(who.encode('utf-8'), usedforsecurity=False).hexdigest()[:10]}"
 
 
 def _single_instance(app: QApplication) -> QLocalServer | None:

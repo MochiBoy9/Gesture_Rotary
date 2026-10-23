@@ -15,8 +15,9 @@ from rotary.ui import liquid
 # ------------------------------------------------------------------ screen assist
 @pytest.mark.parametrize("url, local", [
     ("http://localhost:1234/v1", True), ("http://127.0.0.1:11434", True), ("http://192.168.1.20:1234/v1", True),
-    ("http://[::1]:8080", True), ("http://studio.local:1234", True),
-    ("http://api.example.com/v1", False), ("https://api.openai.com/v1", False), ("http://8.8.8.8", False)])
+    ("http://[::1]:8080", True), ("http://studio.local:1234", True), ("http://gpu-box:1234/v1", True),
+    ("http://api.example.com/v1", False), ("https://api.openai.com/v1", False), ("http://8.8.8.8", False),
+    ("http://localhost.example.com", False), ("http://134744072", False), ("http:///v1", False)])
 def test_local_addresses(url, local):
     assert assist.is_local(url) is local
 
@@ -112,10 +113,12 @@ def test_settings_file_is_only_readable_by_this_user(tmp_path):
 
 
 def test_a_chatty_long_running_command_doesnt_hang():
-    # Far more than a pipe holds: with stderr on a pipe nobody reads, the script would block forever.
-    code = "import sys, time\nsys.stderr.write('x' * 2_000_000)\nsys.stderr.flush()\ntime.sleep(0.2)\nsys.exit(3)"
+    # Far more than a pipe holds: with stderr on a pipe nobody reads, the script would block forever. And the
+    # error that ends it is what's reported, however much came before.
+    code = ("import sys, time\nfor i in range(40_000):\n    print('noise', i, file=sys.stderr)\n"
+            "print('ValueError: the real problem', file=sys.stderr)\nsys.stderr.flush()\ntime.sleep(0.2)\nsys.exit(3)")
     t0 = time.monotonic()
-    with pytest.raises(RuntimeError, match="failed"):
+    with pytest.raises(RuntimeError, match="Python failed: ValueError: the real problem$"):
         actions._run_checked([sys.executable, "-c", code], "Python", grace=20)
     assert time.monotonic() - t0 < 15
 
