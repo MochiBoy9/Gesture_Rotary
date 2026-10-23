@@ -64,7 +64,8 @@ MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x1, 0x2, 0x4, 0x8, 0x4
 HOTKEYS = {"ctrl+alt+space": (MOD_CONTROL | MOD_ALT, 0x20), "ctrl+shift+space": (MOD_CONTROL | MOD_SHIFT, 0x20),
            "ctrl+alt+r": (MOD_CONTROL | MOD_ALT, 0x52), "win+alt+space": (MOD_WIN | MOD_ALT, 0x20)}
 VIDEO_TICKS = 120                  # a video ring is this many steps long: one full turn, start to end
-SLIDES_TINT, VIDEO_TINT = "#FF9F0A", "#FF375F"
+SLIDES_TINT, VIDEO_TINT, VOLUME_TINT = "#FF9F0A", "#FF375F", "#0A84FF"
+VOLUME_TICKS = 25                  # a volume ring: a full turn from silent to full, 4 % a click
 HOTKEY_LABELS = {"ctrl+alt+space": "Ctrl + Alt + Space", "ctrl+shift+space": "Ctrl + Shift + Space",
                  "ctrl+alt+r": "Ctrl + Alt + R", "win+alt+space": "Win + Alt + Space"}
 if MAC:
@@ -77,9 +78,9 @@ HK_ASSIST = 2
 ASSIST_HOTKEYS = {"win+alt+a": (MOD_WIN | MOD_ALT, 0x41), "ctrl+alt+a": (MOD_CONTROL | MOD_ALT, 0x41),
                   "ctrl+shift+a": (MOD_CONTROL | MOD_SHIFT, 0x41)}
 NAV = {11: (0x25, -1), 12: (0x27, 1), 13: (0x26, -1), 14: (0x28, 1), 15: (0x0D, 0), 16: (0x1B, 0)}  # ← → ↑ ↓ ⏎ Esc
-# While the rotary is open from the mouse or the keyboard: + and − (and the keypad's) change the volume.
+# While the rotary is open from the mouse or the keyboard: + and − (and the keypad's) turn it into the volume ring
+# and then turn that ring.
 VOLUME_KEYS = {17: (0xBB, 1), 18: (0xBD, -1), 19: (0x6B, 1), 20: (0x6D, -1)}
-VOLUME_KEY_STEPS = 2           # 4 % a press, or a wheel notch over the slider
 
 
 class HotkeyWindow(QWidget):
@@ -660,7 +661,11 @@ class RotaryApp(QObject):
                 self.open_manual()
             return
         if hid in VOLUME_KEYS and self.engine.phase == Phase.OPEN:
-            self.volume.change(VOLUME_KEYS[hid][1] * VOLUME_KEY_STEPS)
+            if self.mode != "volume":
+                self._enter_volume()
+            else:
+                self._handle(self.engine.key_step(VOLUME_KEYS[hid][1], now))
+                self.dial.set_state(self.engine.snapshot())
             return
         if hid in NAV and self.engine.phase == Phase.OPEN:
             vk, delta = NAV[hid]
@@ -672,6 +677,8 @@ class RotaryApp(QObject):
                 else:
                     self._close_manual("keyboard")
             else:
+                if self.mode == "volume" and vk in (0x26, 0x28):
+                    delta = -delta                       # ↑ louder, ↓ quieter
                 self._handle(self.engine.key_step(delta, now))
             self.dial.set_state(self.engine.snapshot())
 
@@ -686,7 +693,7 @@ class RotaryApp(QObject):
         if self.engine.phase != Phase.OPEN:
             self.open_manual()
         elif self.keyboard_session:
-            self._handle(self.engine.key_step(steps, time.monotonic()))
+            self._handle(self.engine.key_step(-steps if self.mode == "volume" else steps, time.monotonic()))
             self.dial.set_state(self.engine.snapshot())
 
     def _on_mouse_trigger(self, kind: str, n: int) -> None:
@@ -708,7 +715,8 @@ class RotaryApp(QObject):
             return
         now = time.monotonic()
         if kind == "turn":
-            self._handle(self.engine.key_step(n, now))
+            # wheel up = louder on the volume ring (elsewhere wheel down = the next item)
+            self._handle(self.engine.key_step(-n if self.mode == "volume" else n, now))
         elif kind == "select":
             count = len(self.level_items)
             d = (n - self.engine.selected) % count
@@ -716,9 +724,10 @@ class RotaryApp(QObject):
         elif kind == "open":
             self._handle(self.engine.key_execute(now))
         elif kind == "volume":
-            self.volume.change(n * VOLUME_KEY_STEPS)
-        elif kind == "volume_set":
-            self.volume.set(n / 100)
+            if self.mode == "volume":
+                self._leave_mode()
+            else:
+                self._enter_volume()
         elif kind == "back":
             if self.levels:
                 self._go_back()
@@ -1065,6 +1074,36 @@ class RotaryApp(QObject):
             self._say(f"{ctx.app} video")
             self._read_media()
 
+    def _enter_volume(self) -> None:
+        """The volume button (or + / −): the ring becomes the volume, a full turn from silent to full."""
+        if self.mode == "volume":
+            return
+        if self.mode != "main":
+            self._leave_mode(quiet=True)
+        self._main_sel = self.engine.selected
+        self.mode = "volume"
+        self._mode_token += 1
+        token = self._mode_token
+        level = self.dial.painter_.volume_level
+        self._setup_volume(level if level >= 0 else 0.5)
+        self.sounds.play("open")
+        self._say("Volume")
+        self.volume.read(lambda lv: self.mode_data.emit(token, "volume", lv))     # where it really is
+
+    def _setup_volume(self, level: float) -> None:
+        s = self.settings
+        self._apply_mode_settings(detent_force=s.detent_force + 0.1, scroll_speed=s.scroll_speed * 1.2)
+        n = VOLUME_TICKS
+        now = time.monotonic()
+        self.engine.enter_level(n, now, selected=int(round(level * n)), limit=(0, n), fixed_step=14.0)
+        self._mode_n = n
+        self._mode_sel = self.engine.sel_raw
+        self.dial.set_mode("volume", [self._mode_item("Volume", VOLUME_TINT)] * n, self._volume_info(),
+                           self.engine.snapshot())
+
+    def _volume_info(self) -> dict:
+        return {"sub": "Volume", "top": "Volume"}
+
     def _apply_mode_settings(self, **changes) -> None:
         self.engine.s = replace(self.settings, dwell_seconds=0.0, **changes)
 
@@ -1135,7 +1174,14 @@ class RotaryApp(QObject):
     def _on_mode_data(self, token: int, what: str, data) -> None:
         if token != self._mode_token or self.engine.phase != Phase.OPEN:
             return
-        if what == "context":
+        if what == "volume":
+            if self.mode == "volume" and data >= 0:
+                self.dial.painter_.volume_level = data
+                if self.engine.sel_raw == self._mode_sel:    # not turned yet: start from the real level
+                    self.engine.set_position(round(data * self._mode_n), time.monotonic())
+                    self._mode_sel = self.engine.sel_raw
+                    self.dial.set_state(self.engine.snapshot())
+        elif what == "context":
             if data.kind and self.mode == "main" and not self.levels and not self.engine.snapshot().interacted:
                 self._enter_mode(data)
         elif what == "slides" and self.mode == "slides" and data:
@@ -1182,7 +1228,9 @@ class RotaryApp(QObject):
         self._mode_moved = time.monotonic()
         if not delta:
             return
-        if self.mode == "slides":
+        if self.mode == "volume":
+            self.volume.set(self.engine.sel_raw / self._mode_n)
+        elif self.mode == "slides":
             self._mode_exec.submit(modes.step_slides, delta)
             self.dial.painter_.info = self._slides_info()
         elif self._np is not None and self._np.duration > 0:
@@ -1226,6 +1274,7 @@ class RotaryApp(QObject):
         self.engine.s = self.settings
         self.engine.enter_level(len(self.level_items), time.monotonic(), selected=self._main_sel)
         self.dial.set_mode("main", self.level_items, {}, self.engine.snapshot())
+        self.dial.painter_.crumb = self.crumb
         if not quiet:
             self.sounds.play("open")
             self._say("Rotary. " + self.level_items[self.engine.selected % len(self.level_items)].name)
@@ -1245,6 +1294,15 @@ class RotaryApp(QObject):
         self.engine.position = float(self.engine.sel_raw)
 
     def _on_volume_level(self, level: float) -> None:
+        if self.mode == "volume" and self.dial.isVisible():
+            # the volume ring set it (its click already ticked), or the hand's slider: the ring follows
+            self.dial.painter_.volume_level = level
+            turning = time.monotonic() - self._mode_moved < 1.0      # a late answer to our own turn
+            if level >= 0 and not turning and abs(level * self._mode_n - self.engine.position) > 0.5:
+                self.engine.set_position(round(level * self._mode_n), time.monotonic())
+                self._mode_sel = self.engine.sel_raw
+                self.dial.set_state(self.engine.snapshot())
+            return
         self.sounds.play("tick")
         if self.dial.isVisible():
             self.dial.painter_.show_volume(level)

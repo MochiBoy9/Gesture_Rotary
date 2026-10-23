@@ -1939,7 +1939,7 @@ class NotchPage(QWidget):
                  "•  Scroll, or drag around the ring, to turn it\n"
                  "•  Click an item to bring it to the top; click it again, or click the centre, to open it\n"
                  "•  Right-click (or click ‹ at the top) to go back, or close\n"
-                 "•  Drag, click or scroll the volume slider beside the rotary, or press + and −\n"
+                 "•  Click the volume button beside it (or press + or −), then turn the ring to change the volume\n"
                  "•  ← → move, Enter opens, Esc goes back — clicking another window closes it")
         tw = QWidget()
         th = QHBoxLayout(tw)

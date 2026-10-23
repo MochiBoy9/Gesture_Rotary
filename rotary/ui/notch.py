@@ -6,7 +6,8 @@ timer counting down, or Medal recording a game — plus tiny dots when an app us
 or the camera (green). Short status messages (a clip was saved, an app launched…) slide in and out.
 
 Hover it for the details (now playing: art, title, progress and ⏮ ⏯ ⏭); with nothing going on, a longer
-hover says "Click to open wheel". Click it, or scroll on it, to open the rotary. Right-click for timers, screen assist and to customise what it shows.
+hover says "Click to open wheel". Click it, or scroll on it, to open the rotary. Right-click for timers, screen
+assist and to customise what it shows.
 
 Screen assist's answers stay on it for a while: the option to pick ("B") in a badge and a short answer;
 hover for the explanation, Copy and Dismiss.

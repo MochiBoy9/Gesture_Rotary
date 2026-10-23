@@ -114,7 +114,7 @@ exclusive full-screen ones). *Look* switches between Dark (like a real notch) an
 | Click an item | Brings it to the top; click it again (or the centre) to open it |
 | Right-click · Esc · the ‹ at the top | Goes back out of a Quick nav ring, or closes |
 | ← → · Enter | Turn · open |
-| Drag, click or scroll the slider beside it · **+** / **−** | Changes the volume (what the two-finger slider does by hand) |
+| Click the volume button beside it · **+** / **−** | Turns the ring into the volume: a full turn from silent to full, 4 % a click (scroll up or → for louder). Click the button or the centre when done |
 | Click outside it | Closes it |
 
 Hover the notch for a moment with nothing playing on it and it says *Click to open wheel*.

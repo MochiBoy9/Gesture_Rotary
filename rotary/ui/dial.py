@@ -98,7 +98,8 @@ def draw_weather(p: QPainter, kind: str, c: QPointF, size: float, night: bool = 
         body = QPointF(c.x() - 0.16 * k, c.y() - 0.16 * k)
         area = QPainterPath()
         area.addRect(QRectF(c.x() - k, c.y() - k, 2 * k, 2 * k))
-        p.setClipPath(area.subtracted(_cloud(c.x() + 0.08 * k, c.y() + 0.1 * k, k * 0.9)), Qt.ClipOperation.IntersectClip)
+        behind = area.subtracted(_cloud(c.x() + 0.08 * k, c.y() + 0.1 * k, k * 0.9))      # the sun peeks out
+        p.setClipPath(behind, Qt.ClipOperation.IntersectClip)
         if night:
             _moon(p, body, k * 0.8, moon_c)
         else:
@@ -183,7 +184,11 @@ class DialPainter:
         self.volume_level = 0.0        # the volume slider: last level (0..1, or -1 when unknown)
         self.volume_until = 0.0
         self.volume_vis = Spring(0.0, 260.0, 30.0)
-        self.volume_hot = False        # the mouse is over the volume slider
+        self.volume_hot = False        # the mouse is over the volume button
+        self.button_vis = Spring(0.0, 240.0, 26.0)   # the volume button (mouse / keyboard only)
+        self.hot_vis = Spring(0.0, 320.0, 28.0)      # …lifting under the mouse
+        self._pieces: dict = {}        # cached glass for the clock, the button and the slider
+        self._canvas_wh = (float(self.size), float(self.size))
         self.clock_mode = "12h"        # the clock under the ring: 12h | 24h | off
         self.weather = None            # weather.Weather, or None to leave the icon out
         self.fahrenheit = uses_fahrenheit()
@@ -325,11 +330,13 @@ class DialPainter:
                 self.exiting = True
                 self.appear.target = 0.0
                 self.appear.k, self.appear.c = 120.0, 22.0
-        # From the mouse or the keyboard the slider stays out, so there's a way to change the volume without a hand.
-        self.volume_vis.target = 1.0 if (self.keyboard or time.monotonic() < self.volume_until) else 0.0
+        self.volume_vis.target = 1.0 if (time.monotonic() < self.volume_until and self.mode != "volume") else 0.0
+        # From the mouse or the keyboard a button stands in for the two-finger slider.
+        self.button_vis.target = 1.0 if self.keyboard else 0.0
+        self.hot_vis.target = 1.0 if self.volume_hot else 0.0
         for s in (self.appear, self.rot, self.title, self.grip_vis, self.tracked_vis,
                   self.point_vis, self.push_vis, self.px, self.py, self.level_kick, self.gauge_vis,
-                  self.volume_vis):
+                  self.volume_vis, self.button_vis, self.hot_vis):
             s.step(dt)
         if self.items:
             # Ring turned clockwise = positive degrees. Only the primary ring keeps count.
@@ -485,6 +492,7 @@ class DialPainter:
         dev = p.device()
         dpr = dev.devicePixelRatioF() if dev is not None else 1.0
         self._ensure_cache(W, H, dpr)
+        self._canvas_wh = (float(W), float(H))
 
         scale = 1.0 + 0.08 * (1.0 - a) if self.exiting else 0.84 + 0.16 * a
         if self.reduce_motion:
@@ -516,6 +524,7 @@ class DialPainter:
             self._paint_mode(p, n, step, opacity)
             self._clock(p, R)
             self._volume(p, R)
+            self._volume_btn(p)
             return
 
         # ---- bezel ticks that turn with the hand
@@ -618,6 +627,7 @@ class DialPainter:
         self._texts(p, rc)
         self._clock(p, R)
         self._volume(p, R)
+        self._volume_btn(p)
 
     def _lens_body(self, p: QPainter, Rmid: float, lens_r: float) -> tuple[QPainterPath, QPointF]:
         v = self.rot.velocity
@@ -676,8 +686,9 @@ class DialPainter:
         p.drawLine(QPointF(s_ * r0, c_ * r0), QPointF(s_ * r1, c_ * r1))
 
     def _paint_mode(self, p: QPainter, n: int, step: float, opacity: float) -> None:
-        """A slides ring (a cut between every two slides, no icons) or a video ring (a full turn is the whole
-        video, the played part lit), with the lens on top and the slide / time in the middle."""
+        """A slides ring (a cut between every two slides, no icons), a video ring (a full turn is the whole
+        video, the played part lit) or a volume ring (a full turn is silent to full, the level lit), with the lens
+        on top and the slide / time / level in the middle."""
         R, Rin, Rmid, rc, lens_r = self._geom()
         st = self.state
         r0, r1 = Rin + 5, R - 5
@@ -699,17 +710,18 @@ class DialPainter:
                               0.22 + 0.5 * max(0.0, 1 - d / 70), 2.0 if major else 1.4)
         else:
             frac = self.rot.value / max(1, n)
-            if info.get("duration", 0) > 0:
+            full = info.get("duration", 0) > 0 or self.mode == "volume"
+            if full:
                 self._band(p, rot_deg, frac * 360.0, Rmid - (R - Rin) * 0.16, Rmid + (R - Rin) * 0.16,
                            qcolor(self.tint, 0.55))
-            ticks = 60 if info.get("duration", 0) > 0 else 24
+            ticks = (n if self.mode == "volume" else 60) if full else 24
             for j in range(ticks):
                 ang = j * 360.0 / ticks + rot_deg
                 d = abs(_wrap180(ang))
-                major = j % 5 == 0
+                major = j % 5 == 0 if self.mode != "volume" else j % 5 == 0 or j == ticks - 1
                 self._cut(p, ang, r1 - (14 if major else 8), r1, 0.20 + 0.5 * max(0.0, 1 - d / 60),
                           1.8 if major else 1.1)
-            if info.get("duration", 0) > 0:
+            if full:
                 self._cut(p, rot_deg, r0 - 3, r1 + 3, 0.95, 3.2)    # the start (and the end, a full turn on)
 
         lens, Lc = self._lens_body(p, Rmid, lens_r)
@@ -734,6 +746,8 @@ class DialPainter:
         if self.mode == "video" and info.get("duration", 0) > 0:
             from ..modes import fmt_time
             title = fmt_time(max(0.0, min(1.0, self.rot.value / max(1, n))) * info["duration"])
+        elif self.mode == "volume":
+            title = f"{round(max(0.0, min(1.0, self.rot.value / max(1, n))) * 100):.0f}%"
         tf, fm_t = self._font("display", 30 * k, QFont.Weight.DemiBold)
         sf, fm_s = self._font("text", 14 * k, QFont.Weight.Medium if hc else QFont.Weight.Normal)
         th, sh = fm_t.height(), fm_s.height()
@@ -761,20 +775,56 @@ class DialPainter:
                    Qt.AlignmentFlag.AlignCenter, fm_h.elidedText(hint, Qt.TextElideMode.ElideRight, width - 16))
 
     def volume_rect(self) -> QRectF:
-        """The volume slider's track, relative to the centre of the ring."""
+        """The two-finger volume slider's track, relative to the centre of the ring."""
         R = self._geom()[0]
-        h, w = R * 0.95, 12.0 if not self.keyboard else 14.0
+        h, w = R * 0.95, 14.0
         x = R + 38
         return QRectF(x - w / 2, -h / 2, w, h)
 
-    def volume_at(self, y: float) -> float:
-        """The level (0..1) at height y on the slider."""
-        r = self.volume_rect()
-        return max(0.0, min(1.0, (r.bottom() - y) / r.height()))
+    def volume_button(self) -> tuple[QPointF, float]:
+        """Centre and radius of the volume button beside the ring (the mouse and keyboard's way to the volume)."""
+        R = self._geom()[0]
+        return QPointF(R + 46, 0.0), 25.0
+
+    # -- liquid glass pieces beside the ring: the same refracting glass as the ring, cached per backdrop
+    def _glass_brush(self, name: str, shape) -> QBrush | None:
+        bd = self._backdrop
+        if bd is None or self.high_contrast:
+            return None
+        W, H = self._canvas_wh
+        key = (repr(shape), self._backdrop_ver, W, H)
+        got = self._pieces.get(name)
+        if got is None or got[0] != key:
+            img = liquid.render(bd, [shape], origin=(-W / 2, -H / 2), highlight=0.9)
+            got = self._pieces[name] = (key, liquid.brush(img, bd.f, (-W / 2, -H / 2)))
+        return got[1]
+
+    def _glass_piece(self, p: QPainter, name: str, path: QPainterPath, shape, centre: QPointF, r: float,
+                     glow: QColor | None = None) -> None:
+        """A small liquid-glass body: soft shadow, the refracted backdrop, a tint as dark as the backdrop
+        needs, a top sheen, an optional coloured glow, and the rim that catches the light."""
+        hc = self.high_contrast
+        soft_shadow(p, QPointF(centre.x(), centre.y()), r, 10, 0.18, dy=5)
+        b = self._glass_brush(name, shape)
+        if b is not None:
+            p.fillPath(path, b)
+        lum = self._backdrop.lum if self._backdrop is not None else 0.5
+        p.fillPath(path, QColor(10, 10, 14, 215) if hc else qcolor("#0e0e14", liquid.tint_alpha(lum, 0.14, 0.40)))
+        rect = path.boundingRect()
+        lg = QLinearGradient(0, rect.top(), 0, rect.bottom())
+        lg.setColorAt(0.0, white(0.16))
+        lg.setColorAt(0.5, white(0.03))
+        lg.setColorAt(1.0, white(0.08))
+        p.fillPath(path, lg)
+        if glow is not None:
+            p.fillPath(path, glow)
+        if hc:
+            p.strokePath(path, QPen(white(0.9), 1.4))
+        else:
+            stroke_rim(p, path, centre, 1.3, 0.95)
 
     def _volume(self, p: QPainter, R: float) -> None:
-        """The volume slider: a tall glass capsule to the right of the ring while it's in use — always there when
-        the rotary was opened from the mouse or the keyboard, to drag, click or scroll."""
+        """The two-finger slider's level: a tall liquid-glass capsule to the right of the ring while it's in use."""
         v = self.volume_vis.value
         if v <= 0.01:
             return
@@ -785,18 +835,13 @@ class DialPainter:
         p.setOpacity(p.opacity() * min(1.0, v))
         track = QPainterPath()
         track.addRoundedRect(tr, w / 2, w / 2)
-        p.fillPath(track, QColor(10, 10, 14, 170))
+        shape = liquid.RoundRect(tr.left(), tr.top(), tr.right(), tr.bottom(), w / 2, bevel=w * 0.45, bend=0.8)
+        self._glass_piece(p, "slider", track, shape, tr.center(), w / 2)
         if level >= 0:
             fill = QPainterPath()
-            fh = max(w, h * level)
-            fill.addRoundedRect(QRectF(x - w / 2, h / 2 - fh, w, fh), w / 2, w / 2)
+            fh = max(w - 4, (h - 4) * level)
+            fill.addRoundedRect(QRectF(x - w / 2 + 2, h / 2 - 2 - fh, w - 4, fh), (w - 4) / 2, (w - 4) / 2)
             p.fillPath(fill, white(0.92))
-            if self.keyboard:                    # a knob to grab
-                ky = max(-h / 2 + w / 2, min(h / 2 - w / 2, h / 2 - h * level))
-                p.setPen(QPen(black(0.25), 1.0))
-                p.setBrush(white(1.0))
-                p.drawEllipse(QPointF(x, ky), w * 0.8, w * 0.8)
-        p.strokePath(track, QPen(white(0.6 if self.volume_hot else 0.35), 1.4 if self.volume_hot else 1.0))
         p.setFont(font(ICONS, 16 * self.text_scale))
         p.setPen(white(0.95))
         glyph = "\uE74F" if level == 0 else "\uE767"           # muted · speaker
@@ -806,12 +851,45 @@ class DialPainter:
             p.setFont(lf)
             p.drawText(QRectF(x - 24, h / 2 + 6, 48, fm.height()), Qt.AlignmentFlag.AlignCenter,
                        f"{level * 100:.0f}%")
-        if self.keyboard:
-            kf, kfm = self._font("text", 12 * self.text_scale, QFont.Weight.DemiBold)
-            p.setFont(kf)
-            p.setPen(white(0.62))
-            fh_ = self._font("text", 12 * self.text_scale, QFont.Weight.DemiBold)[1].height()
-            p.drawText(QRectF(x - 30, h / 2 + 8 + fh_, 60, kfm.height()), Qt.AlignmentFlag.AlignCenter, "−  +")
+        p.restore()
+
+    def _volume_btn(self, p: QPainter) -> None:
+        """From the mouse or the keyboard: a liquid-glass button beside the ring. Clicking it turns the ring
+        into a volume ring (turn it to change the volume); clicking it again goes back to the items."""
+        v = self.button_vis.value
+        if v <= 0.01:
+            return
+        c, r = self.volume_button()
+        on = self.mode == "volume"
+        hot = self.hot_vis.value
+        r *= 1.0 + 0.06 * hot
+        p.save()
+        p.setOpacity(p.opacity() * min(1.0, v))
+        path = circle(c.x(), c.y(), r)
+        shape = liquid.Circle(c.x(), c.y(), round(r, 1), bevel=r * 0.55, bend=0.75, magnify=1.12)
+        glow = qcolor(self.tint, 0.35 if on else 0.14 * hot) if (on or hot > 0.01) else None
+        self._glass_piece(p, "volume_btn", path, shape, c, r, glow)
+        level = self.volume_level
+        if level >= 0:                         # the level, as an arc around the button
+            rr = r + 5
+            rect = QRectF(c.x() - rr, c.y() - rr, 2 * rr, 2 * rr)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(white(0.14), 2.6))
+            p.drawEllipse(rect)
+            p.setPen(QPen(qcolor(self.tint.lighter(135), 0.95) if on else white(0.85), 2.6, Qt.PenStyle.SolidLine,
+                          Qt.PenCapStyle.RoundCap))
+            p.drawArc(rect, 90 * 16, int(-360 * 16 * level))
+        p.setFont(font(ICONS, 19 * self.text_scale))
+        p.setPen(black(0.25))
+        glyph = "\uE74F" if level == 0 else "\uE767"
+        p.drawText(QRectF(c.x() - r, c.y() - r + 1.2, 2 * r, 2 * r), Qt.AlignmentFlag.AlignCenter, glyph)
+        p.setPen(white(1.0))
+        p.drawText(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r), Qt.AlignmentFlag.AlignCenter, glyph)
+        lf, fm = self._font("text", 11.5 * self.text_scale, QFont.Weight.DemiBold)
+        p.setFont(lf)
+        p.setPen(white(0.85 if on or hot > 0.5 else 0.6))
+        label = "Done" if on else ("Volume" if level < 0 else f"{level * 100:.0f}%")
+        p.drawText(QRectF(c.x() - 36, c.y() + r + 9, 72, fm.height()), Qt.AlignmentFlag.AlignCenter, label)
         p.restore()
 
     def _clock(self, p: QPainter, R: float) -> None:
@@ -833,14 +911,14 @@ class DialPainter:
             w += gap + 1 + gap + icon + 4 * k + fm_d.horizontalAdvance(temp)
         h = max(fm_t.height(), icon) + 12 * k
         cy = R + 18 + h / 2
-        box = QRectF(-w / 2 - pad, cy - h / 2, w + 2 * pad, h)
+        bw = math.ceil((w + 2 * pad) / 8) * 8              # in steps, so the glass is redone only now and then
+        box = QRectF(-bw / 2, round(cy - h / 2), bw, round(h))
         pill = QPainterPath()
-        pill.addRoundedRect(box, h / 2, h / 2)
+        pill.addRoundedRect(box, box.height() / 2, box.height() / 2)
         p.save()
-        soft_shadow(p, QPointF(0, cy), h / 2, 8, 0.16, dy=3)
-        p.fillPath(pill, QColor(10, 10, 14, 215) if hc else QColor(14, 14, 20, 150))
-        p.fillPath(pill, white(0.05))
-        p.strokePath(pill, QPen(white(0.9 if hc else 0.22), 1.0))
+        shape = liquid.RoundRect(box.left(), box.top(), box.right(), box.bottom(), box.height() / 2,
+                                 bevel=box.height() * 0.42, bend=0.8, magnify=1.03)
+        self._glass_piece(p, "clock", pill, shape, box.center(), box.height() / 2)
         x = -w / 2
         p.setFont(tf)
         p.setPen(white(0.98))
@@ -1091,7 +1169,10 @@ class DialPainter:
         if st.sliding:
             return "Slide up or down to change the volume"
         if self.mode != "main":
-            what = "change slides" if self.mode == "slides" else "move through the video"
+            what = {"slides": "change slides", "volume": "change the volume"}.get(self.mode,
+                                                                                 "move through the video")
+            if self.keyboard and self.mode == "volume":
+                return "Scroll, ← → or + − · Click the centre when done"
             if self.keyboard:
                 return f"Scroll or ← → to {what} · Click the centre for apps · Esc to close"
             if not (st.hand_present and st.facing):
@@ -1135,7 +1216,7 @@ class DialWindow(QWidget):
     """The rotary on screen. Opened by a gesture it lets every click through; opened from the notch or the
     keyboard it also takes the mouse: scroll or drag the ring to turn it, click an item to choose it,
     click it again (or the centre) to open it, right-click to go back or close."""
-    # ("turn", ±n) | ("select", index) | ("open", 0) | ("back", 0) | ("volume", ±steps) | ("volume_set", percent)
+    # ("turn", ±n) | ("select", index) | ("open", 0) | ("back", 0) | ("volume", 0): the volume button
     mouse = Signal(str, int)
 
     def __init__(self, items: list[Item], size: int = 600, live_glass: bool = False):
@@ -1150,7 +1231,6 @@ class DialWindow(QWidget):
         self._excluded = False
         self._drag: dict | None = None
         self._wheel = 0
-        self._vol_sent = -1
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.setInterval(16)
@@ -1181,9 +1261,10 @@ class DialWindow(QWidget):
             self._timer.start()
 
     def volume_zone(self) -> QRectF:
-        """The volume slider with its icon and labels, in window coordinates (for the mouse hook)."""
-        r = self.painter_.volume_rect().adjusted(-30, -36, 30, 56)
-        return r.translated(self.width() / 2, self.height() / 2)
+        """The volume button and its label, in window coordinates (for the mouse hook)."""
+        c, r = self.painter_.volume_button()
+        rect = QRectF(c.x() - r - 8, c.y() - r - 8, 2 * r + 16, 2 * r + 36)
+        return rect.translated(self.width() / 2, self.height() / 2)
 
     def set_dial_size(self, size: int) -> None:
         if size != self.painter_.D and not self.isVisible():
@@ -1277,7 +1358,8 @@ class DialWindow(QWidget):
         if not n or dp.exiting:
             return "", 0
         x, y, r, _a = self._local(pt)
-        if dp.volume_vis.value > 0.5 and dp.volume_rect().adjusted(-14, -10, 14, 10).contains(QPointF(x, y)):
+        bc, br = dp.volume_button()
+        if dp.keyboard and math.hypot(x - bc.x(), y - bc.y()) <= br + 6:
             return "volume", 0
         cr = dp._crumb_rect
         if cr is not None and cr.adjusted(-4, -4, 4, 4).contains(QPointF(x, y)):
@@ -1311,12 +1393,8 @@ class DialWindow(QWidget):
         if ev.button() != Qt.MouseButton.LeftButton:
             return
         kind, idx = self.hit(ev.position())
-        _x, y, _r, a = self._local(ev.position())
+        _x, _y, _r, a = self._local(ev.position())
         self._drag = {"kind": kind, "idx": idx, "angle": a, "acc": 0.0, "moved": 0.0, "dragging": False}
-        if kind == "volume":
-            self._drag["dragging"] = True             # press, or press and drag: the level follows the mouse
-            self._set_volume(y)
-            return
         if kind == "ring":
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
@@ -1324,9 +1402,6 @@ class DialWindow(QWidget):
         if not self.interactive:
             return
         d = self._drag
-        if d is not None and d["kind"] == "volume":
-            self._set_volume(self._local(ev.position())[1])
-            return
         if d is not None and d["kind"] in ("item", "ring"):
             _x, _y, _r, a = self._local(ev.position())
             da = _wrap180(a - d["angle"])
@@ -1352,21 +1427,17 @@ class DialWindow(QWidget):
     def leaveEvent(self, ev) -> None:
         self.painter_.volume_hot = False
 
-    def _set_volume(self, y: float) -> None:
-        pct = int(round(self.painter_.volume_at(y) * 50)) * 2          # the slider's 2 % steps
-        if pct != self._vol_sent:
-            self._vol_sent = pct
-            self.painter_.volume_level = pct / 100                   # follow the mouse right away
-            self.mouse.emit("volume_set", pct)
+
 
     def mouseReleaseEvent(self, ev) -> None:
         d, self._drag = self._drag, None
-        self._vol_sent = -1
         if not self.interactive or d is None or ev.button() != Qt.MouseButton.LeftButton or d["dragging"]:
             return
         kind, idx = self.hit(ev.position())
         if kind == "back" and d["kind"] == "back":
             self.mouse.emit("back", 0)
+        elif kind == "volume" and d["kind"] == "volume":
+            self.mouse.emit("volume", 0)
         elif kind == "centre" and d["kind"] == "centre":
             self.mouse.emit("open", 0)
         elif kind == "item" and d["kind"] == "item" and idx == d["idx"]:
@@ -1381,12 +1452,8 @@ class DialWindow(QWidget):
             return
         dlt = ev.angleDelta()
         self._wheel += dlt.y() if abs(dlt.y()) >= abs(dlt.x()) else -dlt.x()
-        on_volume = self.hit(ev.position())[0] == "volume"
         while abs(self._wheel) >= 120:
             step = 1 if self._wheel < 0 else -1          # wheel down = next item
             self._wheel += 120 if self._wheel < 0 else -120
-            if on_volume:
-                self.mouse.emit("volume", -step)         # over the slider: wheel up = louder
-            else:
-                self.mouse.emit("turn", step)
+            self.mouse.emit("turn", step)
         ev.accept()

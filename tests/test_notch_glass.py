@@ -174,34 +174,39 @@ def _press(d, kind_name, pt, button=Qt.MouseButton.LeftButton):
     getattr(d, kind_name)(ev)
 
 
-def test_mouse_volume_slider_beside_the_rotary():
+def test_volume_button_beside_the_rotary():
+    from PySide6.QtGui import QImage, QPainter
     d = DialWindow(build_items(DEFAULT_CONFIG), 600)
     dp = d.painter_
     dp.begin(EngineSnapshot(phase=Phase.OPEN, selected=0, position=0))
     got = []
     d.mouse.connect(lambda k, v: got.append((k, v)))
-    vr = dp.volume_rect()
-    cx, cy = d.width() / 2, d.height() / 2
-    mid = QPointF(cx + vr.center().x(), cy + vr.center().y())
-    dp.tick(0.5)
-    assert d.hit(mid) == ("", 0)                        # opened by a gesture: no slider unless the hand uses it
+    c, r = dp.volume_button()
+    pt = QPointF(d.width() / 2 + c.x(), d.height() / 2 + c.y())
+    assert d.hit(pt) == ("", 0)                         # opened by a gesture: no button
     dp.keyboard = True
     for _ in range(40):
         dp.tick(1 / 60)
-    assert d.hit(mid) == ("volume", 0)
+    assert d.hit(pt) == ("volume", 0)
     d._set_interactive(True)
-    _press(d, "mousePressEvent", QPointF(mid.x(), cy + vr.bottom() - vr.height() * 0.3))
-    _press(d, "mouseMoveEvent", QPointF(mid.x(), cy + vr.top()))
-    _press(d, "mouseReleaseEvent", QPointF(mid.x(), cy + vr.top()))
-    assert got == [("volume_set", 30), ("volume_set", 100)]   # click sets the level, dragging follows (2 % steps)
-    assert dp.volume_level == 1.0
-    got.clear()
-    ev = QWheelEvent(mid, mid, QPoint(0, 0), QPoint(0, 120), Qt.MouseButton.NoButton,
-                     Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
-    d.wheelEvent(ev)
-    assert got == [("volume", 1)]                       # wheel up over the slider = louder, not a turn
+    _press(d, "mousePressEvent", pt)
+    _press(d, "mouseReleaseEvent", pt)
+    assert got == [("volume", 0)]
     z = d.volume_zone()
-    assert z.contains(mid) and z.right() <= d.width() and z.bottom() <= d.height()
+    assert z.contains(pt) and z.right() <= d.width() and z.bottom() <= d.height()
+    # as a volume ring: the level in the middle, the button lit
+    dp.volume_level = 0.4
+    dp.set_mode("volume", dp.items[:1] * 25, {"sub": "Volume", "top": "Volume"},
+                EngineSnapshot(phase=Phase.OPEN, selected=10, position=10))
+    for _ in range(40):
+        dp.tick(1 / 60)
+    img = QImage(d.width(), d.height(), QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(0)
+    p = QPainter(img)
+    dp.paint(p, d.width(), d.height())
+    p.end()
+    assert img.pixelColor(int(pt.x()), int(pt.y())).alpha() > 150
+    assert "done" in dp.hint()
 
 
 def test_breadcrumb_is_a_back_button_from_the_mouse():
