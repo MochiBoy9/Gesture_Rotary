@@ -5,8 +5,9 @@
 ### New
 - **Volume from the mouse and keyboard.** When the rotary opens from the notch, the keyboard shortcut or the
   mouse button, a liquid-glass volume button sits beside it, ringed by the current level. Click it (or press **+**
-  or **−**) and the ring becomes the volume: a full turn from silent to full, 4 % a click; scroll, drag or use
-  the arrow keys, and click the button or the centre when done. It's what the two-finger slider does by hand,
+  or **−**) and the ring becomes the volume: it turns itself round to where the volume already is, with the level
+  as a thin 0–360° line around it (a full turn is full, 4 % a click); scroll, drag or use the arrow keys, and
+  click the button or the centre when done. It's what the two-finger slider does by hand,
   without a camera or a tracked hand.
 - **The time, the date and the weather on the rotary**, in a liquid-glass capsule under the ring: *9:41 AM · Fri, Oct
   23 · ☁ 18°*. 12-hour by default; *General → Appearance → Clock on the rotary* switches to 24-hour or turns it

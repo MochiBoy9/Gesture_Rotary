@@ -216,6 +216,10 @@ class DialPainter:
         self.set_level(items, "", state)
         if mode == "video":
             self.level_kick.snap(0.0)          # the video ring takes over the main one in place
+        elif mode == "volume" and not self.reduce_motion:
+            # It turns itself to where the volume already is: from 0° round to the level.
+            self.rot.snap(0.0)
+            self.rot.target = state.position
 
     def show_volume(self, level: float, seconds: float = 1.6) -> None:
         self.volume_level = level
@@ -708,17 +712,26 @@ class DialPainter:
                     major = info.get("known") and (i % 10 == 0 or (n <= 40 and i % 5 == 0))
                     self._cut(p, ang, r0 + (0 if major else 6), r1 - (0 if major else 6),
                               0.22 + 0.5 * max(0.0, 1 - d / 70), 2.0 if major else 1.4)
+        elif self.mode == "volume":
+            # Discreet: fine ticks turning with the ring, and the level as the thin 0–360° gauge outside it.
+            for j in range(n + 1):
+                ang = j * step + rot_deg
+                d = abs(_wrap180(ang))
+                major = j % 5 == 0
+                self._cut(p, ang, r1 - (9 if major else 5), r1, 0.14 + 0.45 * max(0.0, 1 - d / 60),
+                          1.4 if major else 1.0)
+            self._level_gauge(p, R, max(0.0, min(1.0, self.rot.value / max(1, n))))
         else:
             frac = self.rot.value / max(1, n)
-            full = info.get("duration", 0) > 0 or self.mode == "volume"
+            full = info.get("duration", 0) > 0
             if full:
                 self._band(p, rot_deg, frac * 360.0, Rmid - (R - Rin) * 0.16, Rmid + (R - Rin) * 0.16,
                            qcolor(self.tint, 0.55))
-            ticks = (n if self.mode == "volume" else 60) if full else 24
+            ticks = 60 if full else 24
             for j in range(ticks):
                 ang = j * 360.0 / ticks + rot_deg
                 d = abs(_wrap180(ang))
-                major = j % 5 == 0 if self.mode != "volume" else j % 5 == 0 or j == ticks - 1
+                major = j % 5 == 0
                 self._cut(p, ang, r1 - (14 if major else 8), r1, 0.20 + 0.5 * max(0.0, 1 - d / 60),
                           1.8 if major else 1.1)
             if full:
@@ -1010,6 +1023,27 @@ class DialPainter:
         p.drawText(QRectF(-tw / 2, y, tw, fm.height()), Qt.AlignmentFlag.AlignCenter, text)
         p.restore()
 
+    def _level_gauge(self, p: QPainter, R: float, frac: float) -> None:
+        """The volume ring's level, drawn like the 360° gauge: a hairline track just outside the ring, a tinted
+        arc from 12 o'clock round to the level (all the way round is full) and a bright dot at its end."""
+        r = R + 11
+        rect = QRectF(-r, -r, 2 * r, 2 * r)
+        p.save()
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(white(0.10 if not self.high_contrast else 0.3), 2.0))
+        p.drawEllipse(rect)
+        col = self.tint.lighter(135)
+        p.setPen(QPen(qcolor(col, 0.95), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawArc(rect, 90 * 16, int(-360 * 16 * frac))
+        tip = angle_point(r, 360.0 * frac)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(qcolor(col, 0.35))
+        p.drawEllipse(tip, 6.0, 6.0)
+        p.setBrush(white(0.97))
+        p.drawEllipse(tip, 3.2, 3.2)
+        self._tick(p, 0.0, r + 5, 10, 0.55, 1.6)          # 0° (and 100 %, a full turn on)
+        p.restore()
+
     def _font(self, which: str, px: float, weight: QFont.Weight) -> tuple[QFont, QFontMetricsF]:
         key = (which, px, weight)
         got = self._fonts.get(key)
@@ -1172,7 +1206,7 @@ class DialPainter:
             what = {"slides": "change slides", "volume": "change the volume"}.get(self.mode,
                                                                                  "move through the video")
             if self.keyboard and self.mode == "volume":
-                return "Scroll, ← → or + − · Click the centre when done"
+                return "Scroll or ← → · Click the centre when done"
             if self.keyboard:
                 return f"Scroll or ← → to {what} · Click the centre for apps · Esc to close"
             if not (st.hand_present and st.facing):
