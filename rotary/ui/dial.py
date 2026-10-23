@@ -57,7 +57,7 @@ class DialPainter:
         self._backdrop: liquid.Backdrop | None = None
         self._backdrop_ver = 0
         self.appear = Spring(0.0, 190.0, 20.0)     # a touch of overshoot
-        self.rot = Spring(0.0, 330.0, 29.0)        # liquid follow of the hand
+        self.rot = Spring(0.0, 520.0, 36.0)        # snappy follow of the hand, a little click of overshoot
         self.title = Spring(1.0, 240.0, 30.0)
         self.grip_vis = Spring(0.0, 260.0, 30.0)
         self.tracked_vis = Spring(1.0, 200.0, 28.0)
@@ -80,6 +80,9 @@ class DialPainter:
         self.crumb = ""                # app name while inside a Quick nav ring
         self.keyboard = False          # opened from the keyboard shortcut
         self.level_kick = Spring(0.0, 260.0, 22.0)
+        self.turned = 0.0              # degrees the primary ring has turned since it opened (360° gauge)
+        self.gauge_vis = Spring(0.0, 200.0, 26.0)
+        self._gauge_rot = 0.0
         self._appear_kc = (190.0, 20.0)
         self.invalidate()
 
@@ -94,7 +97,7 @@ class DialPainter:
             self.rot.k, self.rot.c = 520.0, 46.0
             self._appear_kc = (320.0, 36.0)
         else:
-            self.rot.k, self.rot.c = 330.0, 29.0
+            self.rot.k, self.rot.c = 520.0, 36.0
             self._appear_kc = (190.0, 20.0)
 
     def set_level(self, items: list[Item], crumb: str, state: EngineSnapshot) -> None:
@@ -104,6 +107,7 @@ class DialPainter:
         self._cache_key = None
         self.state = state
         self.rot.snap(state.position)
+        self._gauge_rot = state.position
         self._cur_sel = self._prev_sel = state.selected
         self.title.snap(1.0)
         self.tint = QColor(items[state.selected % max(1, len(items))].tint)
@@ -153,6 +157,9 @@ class DialPainter:
         self.appear.target = 1.0
         self.appear.k, self.appear.c = self._appear_kc
         self.rot.snap(state.position)
+        self._gauge_rot = state.position
+        self.turned = 0.0
+        self.gauge_vis.snap(0.0)
         self.title.snap(1.0)
         self._cur_sel = self._prev_sel = state.selected
         self.tint = QColor(self.items[state.selected].tint)
@@ -171,8 +178,12 @@ class DialPainter:
         self.state = state
         if state.phase == Phase.OPEN:
             sel = round(state.position)
-            # Magnetic detent: the ring leans toward the hand, then snaps to the item.
-            self.rot.target = sel + (state.position - sel) * 0.42
+            if state.grip_mode:
+                # The engine already strains the knob against its detent: follow it as is.
+                self.rot.target = state.position
+            else:
+                # Magnetic detent: the ring leans toward the hand, then snaps to the item.
+                self.rot.target = sel + (state.position - sel) * 0.42
         self.grip_vis.target = 1.0 if state.gripping else 0.0
         self.tracked_vis.target = 1.0 if (state.hand_present and state.facing) else 0.0
         self.point_vis.target = 1.0 if state.pointing else 0.0
@@ -197,8 +208,14 @@ class DialPainter:
                 self.appear.target = 0.0
                 self.appear.k, self.appear.c = 120.0, 22.0
         for s in (self.appear, self.rot, self.title, self.grip_vis, self.tracked_vis,
-                  self.point_vis, self.push_vis, self.px, self.py, self.level_kick):
+                  self.point_vis, self.push_vis, self.px, self.py, self.level_kick, self.gauge_vis):
             s.step(dt)
+        if self.items:
+            # Ring turned clockwise = positive degrees. Only the primary ring keeps count.
+            if not self.crumb:
+                self.turned += (self._gauge_rot - self.rot.value) * 360.0 / len(self.items)
+            self._gauge_rot = self.rot.value
+        self.gauge_vis.target = 1.0 if (not self.crumb and abs(self.turned) > 0.5) else 0.0
         if self.items:
             target = QColor(self.items[self.state.selected % len(self.items)].tint)
             self.tint = _mix(self.tint, target, min(1.0, dt * 10))
@@ -394,6 +411,8 @@ class DialPainter:
             d = abs(_wrap180(ang))
             self._tick(p, ang, R - 9, 9.0, 0.28 + 0.5 * max(0.0, 1 - d / 42), 1.4)
 
+        self._gauge(p, R)
+
         # ---- the lens (fixed at 12 o'clock): body first, highlights after the icons
         v = self.rot.velocity
         sx = 1.0 if self.reduce_motion else 1 + min(abs(v) * 0.055, 0.38)
@@ -529,6 +548,46 @@ class DialPainter:
         g.setColorAt(1.0, white(0.0))
         ring, disc = self._ring_paths()
         p.fillPath(ring.united(disc), g)
+
+    def _gauge(self, p: QPainter, R: float) -> None:
+        """360° gauge just outside the ring (primary ring only): how far it has turned since it opened.
+        A thin track with a tinted arc from 12 o'clock, a full lap per 360°, and the angle above the top."""
+        g = self.gauge_vis.value
+        if g <= 0.01 or self.crumb:
+            return
+        deg = self.turned
+        r = R + 11
+        rect = QRectF(-r, -r, 2 * r, 2 * r)
+        p.save()
+        p.setOpacity(p.opacity() * min(1.0, g))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(white(0.10 if not self.high_contrast else 0.3), 3.0))
+        p.drawEllipse(rect)
+        laps, rest = divmod(abs(deg), 360.0)
+        col = self.tint.lighter(135)
+        if laps >= 1:            # a full lap underneath what's left of the next one
+            p.setPen(QPen(qcolor(col, 0.38), 3.0))
+            p.drawEllipse(rect)
+        sign = 1.0 if deg >= 0 else -1.0
+        p.setPen(QPen(qcolor(col, 0.95), 3.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawArc(rect, 90 * 16, int(-sign * rest * 16))
+        # the needle: a bright dot at the current angle
+        tip = angle_point(r, sign * rest)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(white(0.95))
+        p.drawEllipse(tip, 3.4, 3.4)
+        # the 0° mark
+        self._tick(p, 0.0, r + 5, 10, 0.55, 1.6)
+        lf, fm = self._font("display", 14 * self.text_scale, QFont.Weight.DemiBold)
+        p.setFont(lf)
+        text = f"{deg:+.0f}°" if abs(deg) >= 0.5 else "0°"
+        tw = fm.horizontalAdvance(text) + 8
+        y = -(r + 12 + fm.height())
+        p.setPen(black(0.30))
+        p.drawText(QRectF(-tw / 2, y + 1.2, tw, fm.height()), Qt.AlignmentFlag.AlignCenter, text)
+        p.setPen(white(0.92))
+        p.drawText(QRectF(-tw / 2, y, tw, fm.height()), Qt.AlignmentFlag.AlignCenter, text)
+        p.restore()
 
     def _font(self, which: str, px: float, weight: QFont.Weight) -> tuple[QFont, QFontMetricsF]:
         key = (which, px, weight)
@@ -682,8 +741,10 @@ class DialPainter:
         if st.pointing:
             return "Move aside to scroll · push to open" if c.get("finger_push", True) else "Move aside to scroll"
         verb = {"tilt": "Tilt", "move": "Move", "direct": "Turn"}.get(style, "Tilt")
-        if st.gripping:
-            return "Let go to open" if st.grip_turned else f"{verb} to choose"
+        if st.grip_mode:
+            if st.gripping:
+                return "Point your finger to open" if st.interacted else "Tilt your fist to turn"
+            return "Close your hand to keep turning · point to open"
         if st.dwell > 0.02:
             return "Hold still to open" + (" · or pinch" if c.get("pinch_click", True) else "")
         if not st.interacted:
@@ -697,7 +758,7 @@ class DialPainter:
         if c.get("finger_push", True):
             ways.append("point and push")
         if not ways:
-            return "Close your hand, " + verb.lower() + ", let go"
+            return "Close your hand, tilt, then point"
         text = ways[0] if len(ways) == 1 else ", ".join(ways[:-1]) + " or " + ways[-1]
         return text[0].upper() + text[1:] + " to open"
 

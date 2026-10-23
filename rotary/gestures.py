@@ -253,6 +253,9 @@ class GestureSettings:
     move_distance: float = 0.8        # move: palm lengths of sideways travel that start scrolling
     scroll_speed: float = 1.0         # tilt / move: repeat-rate multiplier
     detent_hysteresis: float = 0.12
+    # grip turning: close the hand around an imaginary knob and tilt it
+    detent_force: float = 0.28        # extra turn (in items) past the halfway point before the knob clicks over
+    grip_release_seconds: float = 1.5  # an open hand within this long is a re-grip; longer switches to palm mode
     # launching
     dwell_seconds: float = 1.6
     pinch_click: bool = True
@@ -315,6 +318,7 @@ class EngineSnapshot:
     opened_by: str = ""
     grip_turned: bool = False      # gripping and has turned since grabbing
     interacted: bool = False
+    grip_mode: bool = False        # turning by grip: the knob follows a closed hand, a pointed finger opens
 
 
 # --------------------------------------------------------------------------- #
@@ -374,6 +378,9 @@ class GestureEngine:
         self._last_interaction = 0.0
         self._interacted = False
         self._grip_start_sel: int | None = None
+        self._grip_mode = False
+        self._grip_open_since: float | None = None
+        self._need_unpoint = False
         self._lost_since: float | None = None
         self._back_since: float | None = None
         self._dwell = 0.0
@@ -449,6 +456,9 @@ class GestureEngine:
         self._lost_since = None
         self._back_since = None
         self._grip_start_sel = self.sel_raw if self.gripping else None
+        if self._grip_mode and not self.gripping:
+            self._grip_open_since = now     # a fresh window to close the hand on the new ring
+        self._need_unpoint = self.pointing
         if self._f is not None:
             self._point_origin = self._f.tip
             self._point_since = now
@@ -482,6 +492,7 @@ class GestureEngine:
             grip_turned=self.gripping and self._grip_start_sel is not None
             and self.sel_raw != self._grip_start_sel,
             interacted=self._interacted,
+            grip_mode=self._grip_mode,
         )
 
     _last_now = 0.0
@@ -527,6 +538,7 @@ class GestureEngine:
             self._arming = 0.0
             if now >= self._exec_until:
                 self.phase = Phase.IDLE
+                self._grip_mode = False
                 self._anchor = None
                 self._cooldown_until = now + s.profile[4]
                 events.append(("closed", "executed"))
@@ -592,7 +604,7 @@ class GestureEngine:
                 self._grip_frames = 0
         else:
             curled = sum(c > 0.5 for c in f.curls)
-            if g > s.grip_on and curled >= 3 and f.curls[0] > 0.45:   # index curled too (not pointing)
+            if g > s.grip_on and curled >= 3 and f.curls[0] > 0.45 and not self.pointing:   # not pointing
                 self._grip_frames += 1
                 if self._grip_frames >= 2:
                     self.gripping = True
@@ -614,6 +626,8 @@ class GestureEngine:
             self._point_frames += 1
             if self._point_frames >= 3:
                 self.pointing = True
+                self.gripping = False        # a fist with the index finger out is a point, not a grip
+                self._grip_frames = 0
                 self._point_frames = 0
                 self._point_since = now
                 self._point_origin = f.tip
@@ -711,6 +725,9 @@ class GestureEngine:
         self._sel_since = now
         self._last_interaction = now
         self._grip_start_sel = self.sel_raw if self.gripping else None
+        self._grip_mode = self.gripping
+        self._grip_open_since = None
+        self._need_unpoint = self.pointing
         self._lost_since = None
         self._back_since = None
         self._dwell = 0.0
@@ -726,6 +743,7 @@ class GestureEngine:
 
     def _close(self, reason: str, now: float) -> list:
         self.phase = Phase.IDLE
+        self._grip_mode = False
         self.still_armed = False
         self.grip_armed = not self.gripping
         self._anchor = None
@@ -829,6 +847,42 @@ class GestureEngine:
                 return self._execute(now)
         return []
 
+    def _update_grip(self, now: float) -> list:
+        """Grip mode: the ring is a heavy knob held in a closed hand. Tilting the hand turns it, one firm
+        click per item; opening the hand lets go of it (it stays put, so you can re-grip and keep turning,
+        like a ratchet) and pointing the index finger opens the selected item."""
+        s = self.s
+        self._dwell = 0.0
+        self._push = 0.0
+        self._pointer = (0.0, 0.0)
+        self._lean = 0.0
+        self._scroll_dir = 0
+        self._last_interaction = now
+        if not self.pointing:
+            self._need_unpoint = False
+        if not self.gripping:
+            self._rebase = True                      # re-grip picks up from wherever the hand is then
+            self.position = float(self.sel_raw)
+            if self.pointing and not self._need_unpoint and now - self._point_since >= 0.08:
+                return self._execute(now)
+            return []
+        if self._rebase:
+            self._base_angle = self._ang
+            self._base_pos = float(self.sel_raw)
+            self._rebase = False
+        raw = self._base_pos - math.degrees(self._ang - self._base_angle) / self.step_degrees
+        events: list = []
+        off = raw - self.sel_raw
+        if abs(off) > 0.5 + max(0.0, s.detent_force):
+            self.sel_raw = int(round(raw))
+            self._interacted = True
+            self._sel_since = now
+            events.append(("select", self.selected))
+            off = raw - self.sel_raw
+        # Resistance: the ring strains a little toward the hand, then clicks over to the next item.
+        self.position = self.sel_raw + 0.3 * math.tanh(off / 0.6)
+        return events
+
     def _update_open(self, tracked: bool, now: float) -> list:
         s = self.s
         events: list = []
@@ -838,6 +892,21 @@ class GestureEngine:
             self._seen_open = True
             self._lost_since = None
             self._back_since = None
+
+            if self.gripping:
+                if not self._grip_mode:
+                    self._grip_mode = True
+                    self._rebase = True
+                    self._grip_start_sel = self.sel_raw
+                self._grip_open_since = None
+            elif self._grip_mode:
+                self._grip_open_since = self._grip_open_since or now
+                if now - self._grip_open_since >= s.grip_release_seconds and not self.pointing:
+                    self._grip_mode = False          # open long enough: palm mode
+                    self._rebase = True
+                    self._sel_since = now
+            if self._grip_mode:
+                return events + self._update_grip(now)
 
             if self.pointing:
                 if not self._rebase:
@@ -873,18 +942,6 @@ class GestureEngine:
                     self._sel_since = now
                     self._last_interaction = now
                     events.append(("select", self.selected))
-
-            # Grab-turn-release.
-            if self.gripping:
-                if self._grip_start_sel is None:
-                    self._grip_start_sel = self.sel_raw
-                self._last_interaction = now
-            elif self._grip_start_sel is not None:
-                turned = self.sel_raw != self._grip_start_sel
-                self._grip_start_sel = None
-                self._sel_since = now
-                if turned:
-                    return events + self._execute(now)
 
             if pinch_edge and s.pinch_click and not self.gripping:
                 return events + self._execute(now)
