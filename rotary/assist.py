@@ -1,8 +1,10 @@
 """Screen assist: an AI looks at the screen, finds the question or problem on it and answers on the notch.
 
 It works with free AI services: Google Gemini (a free API key from Google AI Studio), Groq and OpenRouter
-(free tiers), and Ollama (free and private, it runs on this computer). ChatGPT and any other
-OpenAI-compatible server work too. The screenshot goes only to the service you chose, and only when you ask.
+(free tiers), and Ollama (free and private, it runs on this computer). Paid accounts work too: Claude with an
+Anthropic API key, ChatGPT with an OpenAI API key (or any other OpenAI-compatible server), and Gemini's paid
+models on a billed Google key. list_models() asks the service which models that key can use, so the settings can
+offer them. The screenshot goes only to the service you chose, and only when you ask.
 
 The answer comes back as JSON: whether there's a question at all, the option to pick for multiple choice
 ("B"), a short answer for the notch and a sentence of explanation for its hover card.
@@ -27,17 +29,19 @@ log = logging.getLogger(__name__)
 class Provider:
     id: str
     name: str
-    style: str          # gemini | openai | ollama: which API it speaks
+    style: str          # gemini | openai | ollama | anthropic: which API it speaks
     url: str            # the API's base address
-    model: str          # a free model that can see images
+    model: str          # the default: a model that can see images (a free one, unless the service is paid)
     key_url: str        # where to get a key ('' = none needed)
     note: str
+    paid: bool = False  # needs an account with billing; there's no free tier
 
 
 PROVIDERS = [
     Provider("gemini", "Google Gemini", "gemini", "https://generativelanguage.googleapis.com/v1beta",
              "gemini-flash-latest", "https://aistudio.google.com/apikey",
-             "Free. Get a key from Google AI Studio with your Google account; no card needed."),
+             "Free. Get a key from Google AI Studio with your Google account; no card needed. Turn on billing "
+             "for that key to pick the Pro models."),
     Provider("groq", "Groq", "openai", "https://api.groq.com/openai/v1",
              "meta-llama/llama-4-scout-17b-16e-instruct", "https://console.groq.com/keys",
              "Free and very fast. Get a key from the Groq console."),
@@ -47,16 +51,23 @@ PROVIDERS = [
     Provider("ollama", "Ollama (on this computer)", "ollama", "http://localhost:11434", "gemma3",
              "", "Free and private: nothing leaves this computer. Install Ollama from ollama.com, then run "
                  "\"ollama pull gemma3\" (or another model that can see images, like qwen2.5vl)."),
-    Provider("openai", "ChatGPT / OpenAI-compatible", "openai", "https://api.openai.com/v1", "gpt-4o-mini",
+    Provider("anthropic", "Claude (Anthropic)", "anthropic", "https://api.anthropic.com", "claude-opus-5-5",
+             "https://platform.claude.com/settings/keys",
+             "Paid per use. Create an API key on the Claude Platform; a Claude Pro or Max plan doesn't include "
+             "API use, so add credit there first.", paid=True),
+    Provider("openai", "ChatGPT / OpenAI-compatible", "openai", "https://api.openai.com/v1", "gpt-6-astra",
              "https://platform.openai.com/api-keys",
-             "OpenAI's API needs a paid key. Change the address to use LM Studio or any other "
-             "OpenAI-compatible server."),
+             "Paid per use. Create an API key on the OpenAI Platform; a ChatGPT Plus or Pro plan doesn't include "
+             "API use. Change the address to use LM Studio or any other OpenAI-compatible server.", paid=True),
 ]
 BY_ID = {p.id: p for p in PROVIDERS}
 
 DEFAULTS = {"provider": "gemini", "models": {}, "urls": {}, "keys": {}, "seconds": 20,
             "hotkey": "ctrl+alt+a" if MAC else "win+alt+a"}
 TIMEOUT = 90.0
+ANTHROPIC_VERSION = "2026-10-21"
+# Claude models that accept "fallbacks": "default": when one declines a screenshot, the API answers with another.
+ANTHROPIC_FALLBACK = ("claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5")
 MAX_SIDE = 1600          # screenshots are scaled down to this: plenty to read text, quick to upload
 
 SYSTEM = """You look at a screenshot of someone's computer screen and help with the question or problem on it \
@@ -148,7 +159,7 @@ def ready(cfg: dict | None) -> str:
         return ""
     if p.id == "openai" and url_for(cfg, p) != p.url:
         return ""                                   # LM Studio and other local servers need no key
-    return f"Add {'an' if p.id == 'openai' else 'a free'} {p.name} API key on the Screen assist page"
+    return f"Add {'your' if p.paid else 'a free'} {p.name} API key on the Screen assist page"
 
 
 # --------------------------------------------------------------------------- the request
@@ -170,6 +181,18 @@ def build_request(p: Provider, model: str, base: str, key: str, image: bytes,
                 "messages": [{"role": "system", "content": SYSTEM},
                              {"role": "user", "content": ASK, "images": [b64]}]}
         return f"{base}/api/chat", headers, body
+    if p.style == "anthropic":
+        if key:
+            headers["x-api-key"] = key
+        headers["anthropic-version"] = ANTHROPIC_VERSION
+        body = {"model": model, "max_tokens": 16000, "system": SYSTEM,
+                "messages": [{"role": "user", "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}},
+                    {"type": "text", "text": ASK}]}]}
+        if model.startswith(ANTHROPIC_FALLBACK):
+            headers["anthropic-beta"] = "server-side-fallback-2026-07-01"
+            body["fallbacks"] = "default"
+        return f"{base}/v1/messages", headers, body
     if key:
         headers["Authorization"] = f"Bearer {key}"
     if "openrouter.ai" in base:
@@ -196,6 +219,10 @@ def reply_text(style: str, data: dict) -> str:
         return "".join(str(pt.get("text", "")) for pt in parts if not pt.get("thought"))
     if style == "ollama":
         return str((data.get("message") or {}).get("content", ""))
+    if style == "anthropic":
+        if data.get("stop_reason") == "refusal":
+            raise AssistError("Claude declined to answer this one")
+        return "".join(str(b.get("text", "")) for b in data.get("content") or [] if b.get("type") == "text")
     choices = data.get("choices") or []
     if not choices:
         raise AssistError("The AI didn't answer")
@@ -268,8 +295,10 @@ def _error_message(raw: bytes) -> str:
     return str(err or "")[:160]
 
 
-def post(url: str, headers: dict, body: dict, p: Provider, model: str, timeout: float = TIMEOUT) -> dict:
-    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+def post(url: str, headers: dict, body: dict | None, p: Provider, model: str = "", timeout: float = TIMEOUT) -> dict:
+    """POST `body` as JSON, or GET when there's no body; the reply's JSON, or an AssistError in words."""
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method="GET" if body is None else "POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as r:
             return json.loads(r.read().decode("utf-8"))
@@ -279,8 +308,12 @@ def post(url: str, headers: dict, body: dict, p: Provider, model: str, timeout: 
         if e.code in (401, 403):
             raise AssistError(f"{p.name} refused the API key") from None
         if e.code == 429:
+            if p.paid:
+                raise AssistError(f"{p.name} says you've hit your account's limit; try again in a minute") from None
             raise AssistError(f"{p.name}'s free limit is used up for now; try again in a minute") from None
         if e.code == 404:
+            if not model:
+                raise AssistError(f"{p.name} has no list of models at this address") from None
             if p.style == "ollama":
                 raise AssistError(f"Ollama doesn't have {model} yet; run: ollama pull {model}") from None
             raise AssistError(f"{p.name} doesn't know the model {model}") from None
@@ -308,6 +341,73 @@ def solve(image: bytes, cfg: dict | None, mime: str = "image/jpeg") -> Answer:
     ans = parse_reply(text)
     log.info("screen assist: found=%s choice=%r answer=%r", ans.found, ans.choice, ans.answer)
     return ans
+
+
+# --------------------------------------------------------------------------- which models a key can use
+# Ids on OpenAI-compatible lists that can't answer a chat with a screenshot (speech, pictures, embeddings…).
+_NOT_CHAT = re.compile(r"embed|whisper|tts|transcri|dall-e|image|realtime|audio|moderation|guard|sora|"
+                       r"babbage|davinci|search|computer-use|codex|translate|live", re.I)
+_GEMINI_SKIP = re.compile(r"embed|tts|image|live|transcribe|aqa|banana|omni", re.I)
+
+
+def list_models(cfg: dict | None, p: Provider | None = None, timeout: float = 20.0) -> list[tuple[str, str]]:
+    """[(model id, name to show)] that this service offers the saved key, newest first where the service says.
+    Blocking: run it off the UI thread."""
+    p = p or provider(cfg)
+    base, key = url_for(cfg, p), key_for(cfg, p)
+    headers = {"User-Agent": "GestureRotary"}
+    out: list[tuple[str, str]] = []
+    if p.style == "anthropic":
+        if key:
+            headers["x-api-key"] = key
+        headers["anthropic-version"] = ANTHROPIC_VERSION
+        after = ""
+        for _page in range(10):
+            data = post(f"{base}/v1/models?limit=1000" + (f"&after_id={after}" if after else ""), headers, None, p,
+                        timeout=timeout)
+            for m in data.get("data") or []:
+                caps = m.get("capabilities") or {}
+                if (caps.get("image_input") or {}).get("supported", True):
+                    out.append((str(m["id"]), str(m.get("display_name") or m["id"])))
+            after = str(data.get("last_id") or "")
+            if not data.get("has_more") or not after:
+                break
+        return out
+    if p.style == "gemini":
+        if key:
+            headers["x-goog-api-key"] = key
+        token = ""
+        for _page in range(10):
+            data = post(f"{base}/models?pageSize=1000" + (f"&pageToken={token}" if token else ""), headers, None, p,
+                        timeout=timeout)
+            for m in data.get("models") or []:
+                mid = str(m.get("name", "")).removeprefix("models/")
+                if ("generateContent" in (m.get("supportedGenerationMethods") or [])
+                        and mid and not _GEMINI_SKIP.search(mid)):
+                    out.append((mid, str(m.get("displayName") or mid)))
+            token = str(data.get("nextPageToken") or "")
+            if not token:
+                break
+        return out
+    if p.style == "ollama":
+        data = post(f"{base}/api/tags", headers, None, p, timeout=timeout)
+        return [(str(m["name"]), str(m["name"])) for m in data.get("models") or [] if m.get("name")]
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    data = post(f"{base}/models", headers, None, p, timeout=timeout)
+    rows = []
+    for m in data.get("data") or []:
+        mid = str(m.get("id") or "")
+        if not mid:
+            continue
+        mods = (m.get("architecture") or {}).get("input_modalities")    # OpenRouter says what each model reads
+        if mods is not None:
+            if "image" not in mods:
+                continue
+        elif _NOT_CHAT.search(mid):
+            continue
+        rows.append((-int(m.get("created") or 0), mid, str(m.get("name") or mid)))
+    return [(mid, name) for _c, mid, name in sorted(rows)]
 
 
 # --------------------------------------------------------------------------- the screenshot

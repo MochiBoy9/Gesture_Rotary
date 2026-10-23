@@ -163,7 +163,7 @@ on the notch:
 - **Hover** the answer for a sentence on why, plus *Copy*. **Click** it to put it away. Otherwise it stays
   for 20 seconds (or 10 / 45 / 90).
 
-It works with free AI services. Pick one on the *Screen assist* page:
+It works with free AI services, or with your own paid account. Pick one on the *Screen assist* page:
 
 | Service | Cost | Setup |
 | --- | --- | --- |
@@ -171,9 +171,15 @@ It works with free AI services. Pick one on the *Screen assist* page:
 | **Groq** | Free tier | Key from [console.groq.com/keys](https://console.groq.com/keys). Very fast. |
 | **OpenRouter** | Free models (`…:free`) | Key from [openrouter.ai/keys](https://openrouter.ai/keys). |
 | **Ollama** | Free, private | Runs on your own computer, so nothing leaves it. Install [Ollama](https://ollama.com/download), then `ollama pull gemma3` (or another vision model such as `qwen2.5vl`). No key needed. |
-| **ChatGPT / OpenAI-compatible** | OpenAI's API is paid | An OpenAI key, or change the address to use LM Studio or any other OpenAI-compatible server. |
+| **Claude (Anthropic)** | Paid per use | An API key from [platform.claude.com](https://platform.claude.com/settings/keys). Uses Claude Opus 5.5 unless you pick another model. |
+| **ChatGPT / OpenAI-compatible** | Paid per use | An API key from [platform.openai.com](https://platform.openai.com/api-keys). Uses GPT-6 Astra unless you pick another model. Or change the address to use LM Studio or any other OpenAI-compatible server. |
 
-Every service lets you change the model. Keys are kept the same way as the OBS password: encrypted for your Windows
+A Claude Pro / Max or ChatGPT Plus / Pro subscription doesn't include API use, so the paid services need an API key
+with credit on it. Gemini's Pro models need billing turned on for your Google key.
+
+Every service lets you change the model. Once your key is saved, *List my models* shows the models that key can
+use (only the ones that can see images), so you can pick, say, Claude Sonnet 5.5 or GPT-6 Luna. You can also
+type any model name. Keys are kept the same way as the OBS password: encrypted for your Windows
 account, in the macOS Keychain, or in the Linux keyring. The screenshot (the screen under the mouse) goes only
 to the service you chose, and only when you ask. On a Mac, allow **Screen Recording** the first time; without it
 the AI only sees your wallpaper. On Linux it needs X11: Wayland doesn't let apps capture the screen this way.

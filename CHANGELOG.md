@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.8.0] — Your own AI model
+
+### New
+- **Claude in Screen assist.** Choose *Claude (Anthropic)* on the *Screen assist* page and paste an API key from
+  the [Claude Platform](https://platform.claude.com/settings/keys). It uses Claude Opus 5.5 unless you pick
+  another model.
+- **Pick any model your account has.** *List my models* (or just saving a key) asks the service which models
+  your key can use and offers the ones that can see images: Claude Opus, Sonnet and Haiku, OpenAI's GPT-6 Astra,
+  Sol and Luna, Gemini's paid Pro models on a billed key, OpenRouter's models, or what you've pulled in Ollama.
+  You can still type any model name.
+
+### Changed
+- *ChatGPT / OpenAI-compatible* now uses GPT-6 Astra by default (it was GPT-4o mini).
+- When a paid service says you've hit your limit, the notch says so instead of mentioning a free limit.
+
 ## [1.7.0] — Volume, slides and videos
 
 ### New
