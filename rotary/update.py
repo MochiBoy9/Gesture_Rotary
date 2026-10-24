@@ -11,8 +11,13 @@ Only the packaged app updates itself, and only from a folder that unmistakably i
 (system.install_folder()). Running from source, it just says that a newer version is out.
   Windows  the Setup.exe when the app was installed with it (it upgrades in place, silently), otherwise the
            portable .zip
-  macOS    the .dmg's Gesture Rotary.app replaces the installed one
-  Linux    the .tar.gz's gesture-rotary folder replaces the installed one"""
+  macOS    the .dmg's RotaryUI.app (or Gesture Rotary.app) replaces the installed one, which keeps its name
+  Linux    the .tar.gz's gesture-rotary folder replaces the installed one
+
+The files are named RotaryUI-<version>-…; each release also carries copies under the names from before the
+rename (GestureRotary-<version>-…), which is what copies older than 2.0 look for. On Windows and Linux the
+installed files and folders keep their old names, so either kind of copy finds what it expects inside; the
+Mac's GestureRotary-…dmg has the app as "Gesture Rotary.app" for them."""
 from __future__ import annotations
 
 import hashlib
@@ -93,7 +98,7 @@ def _get(url: str, timeout: float, accept: str = "application/octet-stream"):
     from .assist import _ssl_context
     if not trusted(url):
         raise UpdateError(f"Refused to download from {urllib.parse.urlsplit(str(url)).hostname or url}")
-    req = urllib.request.Request(url, headers={"User-Agent": f"GestureRotary/{__version__}", "Accept": accept})
+    req = urllib.request.Request(url, headers={"User-Agent": f"RotaryUI/{__version__}", "Accept": accept})
     r = urllib.request.urlopen(req, timeout=timeout, context=_ssl_context())
     if not trusted(r.geturl()):                      # where a redirect ended up
         r.close()
@@ -145,14 +150,21 @@ def setup_installed(folder: Path) -> bool:
     return (folder / "unins000.exe").is_file()
 
 
-def asset_name(version: str, folder: Path | None = None, win: bool = WIN, mac: bool = MAC) -> str:
+def asset_name(version: str, folder: Path | None = None, win: bool = WIN, mac: bool = MAC,
+               prefix: str = "RotaryUI") -> str:
     """The release file that updates this copy (the names tools/build.py gives them)."""
     if win:
         kind = "Setup.exe" if folder is not None and setup_installed(folder) else "Portable.zip"
-        return f"GestureRotary-{version}-Windows-{kind}"
+        return f"{prefix}-{version}-Windows-{kind}"
     if mac:
-        return f"GestureRotary-{version}-macOS.dmg"
-    return f"GestureRotary-{version}-Linux-{_arch()}.tar.gz"
+        return f"{prefix}-{version}-macOS.dmg"
+    return f"{prefix}-{version}-Linux-{_arch()}.tar.gz"
+
+
+def pick_asset(release: Release, folder: Path | None) -> str:
+    """This copy's file in the release: the RotaryUI one, or the one named as before the rename."""
+    names = [asset_name(release.version, folder, prefix=p) for p in ("RotaryUI", "GestureRotary")]
+    return next((n for n in names if n in release.assets), names[0])
 
 
 def unsupported() -> str:
@@ -170,7 +182,7 @@ def unsupported() -> str:
 # --------------------------------------------------------------------------- download + unpack
 def download(release: Release, folder: Path | None, progress=None) -> Path:
     """Fetch this system's file from the release into WORK and check its SHA-256. Blocking."""
-    name = asset_name(release.version, folder)
+    name = pick_asset(release, folder)
     if name not in release.assets:
         raise UpdateError(f"Version {release.version} has no download for this {system_name()}")
     if SUMS not in release.assets:
@@ -257,9 +269,9 @@ def prepare(file: Path, version: str, folder: Path) -> Staged:
             subprocess.run(["hdiutil", "attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint",
                             str(mount), str(file)], check=True, capture_output=True, timeout=120)
             try:
-                app = mount / "Gesture Rotary.app"
-                if not app.is_dir():
-                    raise UpdateError("The update doesn't contain Gesture Rotary.app")
+                app = next((mount / n for n in ("RotaryUI.app", "Gesture Rotary.app") if (mount / n).is_dir()), None)
+                if app is None:
+                    raise UpdateError("The update doesn't contain RotaryUI.app")
                 # ditto keeps the bundle's symlinks and signature
                 subprocess.run(["ditto", str(app), str(new)], check=True, capture_output=True, timeout=300)
             finally:

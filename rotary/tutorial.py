@@ -1,4 +1,4 @@
-"""The first-run tour: a short series of cards that show how to use Gesture Rotary.
+"""The first-run tour: a short series of cards that show how to use RotaryUI.
 
 Pure Python: no Qt. `steps_for(ctx)` builds the cards for this user (camera or mouse, their gesture
 settings, their shortcuts) and `Tour` walks through them. ui/tutorial.py draws them.
@@ -144,7 +144,7 @@ def _camera(ctx: Context) -> bool:
 
 
 CORE: list[Step | Callable[[Context], Step]] = [
-    lambda ctx: Step("welcome", "Welcome to Gesture Rotary",
+    lambda ctx: Step("welcome", "Welcome to RotaryUI",
                      ("A one-minute tour: how to open the rotary with your hand, turn it, launch things, and how "
                       "to do all of it with a mouse instead." if ctx.camera else
                       "A quick tour: how to open the rotary with your mouse and keyboard, turn it and launch "

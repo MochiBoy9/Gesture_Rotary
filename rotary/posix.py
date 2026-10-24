@@ -444,7 +444,7 @@ def press_keys(names: list[str]) -> None:
     if not _controller:
         raise RuntimeError("pressing keys isn't supported on this desktop")
     if not accessibility_allowed():
-        raise RuntimeError("Allow Gesture Rotary in System Settings → Privacy & Security → Accessibility")
+        raise RuntimeError("Allow RotaryUI in System Settings → Privacy & Security → Accessibility")
     keys = [_pynput_key(n) for n in names]
     pressed = []
     try:
@@ -717,7 +717,7 @@ def desktop_quote(arg: str) -> str:
 
 
 def write_desktop_file(path: Path, cmd: list[str], cwd: str = "", icon: str = "", autostart: bool = False) -> None:
-    lines = ["[Desktop Entry]", "Type=Application", "Name=Gesture Rotary",
+    lines = ["[Desktop Entry]", "Type=Application", "Name=RotaryUI",
              "Comment=A rotary launcher you turn with your hand, the mouse or the keyboard",
              "Exec=" + " ".join(desktop_quote(c) for c in cmd), "Terminal=false", "Categories=Utility;",
              "StartupWMClass=gesture-rotary"]
@@ -734,7 +734,7 @@ def write_desktop_file(path: Path, cmd: list[str], cwd: str = "", icon: str = ""
 # --------------------------------------------------------------------------- secrets
 # macOS: the login Keychain (Security.framework). Linux: the Secret Service (secret-tool), when it's there.
 # Otherwise the token is only base64 — readable by anyone who can read the config file.
-SERVICE = "Gesture Rotary"
+SERVICE = "Gesture Rotary"     # the name secrets were saved under before RotaryUI: keep it, or they're lost
 
 
 def _security():

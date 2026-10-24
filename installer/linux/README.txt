@@ -1,11 +1,11 @@
-GESTURE ROTARY FOR LINUX
+ROTARYUI FOR LINUX
 ========================
 
 Install (no root needed)
   ./install.sh
-  Then start "Gesture Rotary" from your apps menu, or run:  gesture-rotary
+  Then start "RotaryUI" from your apps menu, or run:  rotaryui
 
-  It goes to ~/.local/share/gesture-rotary, with a menu entry and ~/.local/bin/gesture-rotary.
+  It goes to ~/.local/share/gesture-rotary, with a menu entry and ~/.local/bin/rotaryui.
   You can also run it straight from this folder:  ./gesture-rotary/gesture-rotary
 
 Needs

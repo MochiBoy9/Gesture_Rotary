@@ -117,8 +117,8 @@ class NotchWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setWindowTitle("Gesture Rotary notch")
-        self.setAccessibleName("Gesture Rotary notch")
+        self.setWindowTitle("RotaryUI notch")
+        self.setAccessibleName("RotaryUI notch")
 
         self.hovered = False
         self.peek = False

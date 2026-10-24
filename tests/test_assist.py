@@ -34,7 +34,7 @@ def test_openai_style_request_for_groq_openrouter_and_chatgpt():
     p = assist.BY_ID["openrouter"]
     url, headers, body = assist.build_request(p, p.model, p.url, "sk-or", JPEG)
     assert url == "https://openrouter.ai/api/v1/chat/completions"
-    assert headers["Authorization"] == "Bearer sk-or" and headers["X-Title"] == "Gesture Rotary"
+    assert headers["Authorization"] == "Bearer sk-or" and headers["X-Title"] == "RotaryUI"
     assert p.model.endswith(":free")
     user = body["messages"][1]["content"]
     img = next(c for c in user if c["type"] == "image_url")["image_url"]["url"]

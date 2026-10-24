@@ -197,7 +197,7 @@ def build_request(p: Provider, model: str, base: str, key: str, image: bytes,
                   mime: str = "image/jpeg", ask: str = ASK) -> tuple[str, dict, dict]:
     """(url, headers, JSON body) for one screenshot. No network here, so it can be tested."""
     b64 = base64.b64encode(image).decode("ascii")
-    headers = {"Content-Type": "application/json", "User-Agent": "GestureRotary"}
+    headers = {"Content-Type": "application/json", "User-Agent": "RotaryUI"}
     if p.style == "gemini":
         if key:
             headers["x-goog-api-key"] = key
@@ -227,7 +227,7 @@ def build_request(p: Provider, model: str, base: str, key: str, image: bytes,
         headers["Authorization"] = f"Bearer {key}"
     if "openrouter.ai" in base:
         headers["HTTP-Referer"] = "https://github.com/MochiBoy9/Gesture_Rotary"
-        headers["X-Title"] = "Gesture Rotary"
+        headers["X-Title"] = "RotaryUI"
     # No response_format: not every OpenAI-compatible server accepts it alongside an image. The prompt asks
     # for JSON and parse_reply() copes with a little extra around it.
     body = {"model": model,
@@ -433,7 +433,7 @@ def list_models(cfg: dict | None, p: Provider | None = None, timeout: float = 20
     Blocking: run it off the UI thread."""
     p = p or provider(cfg)
     base, key = url_for(cfg, p), key_for(cfg, p)
-    headers = {"User-Agent": "GestureRotary"}
+    headers = {"User-Agent": "RotaryUI"}
     out: list[tuple[str, str]] = []
     if p.style == "anthropic":
         if key:

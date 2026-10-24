@@ -1272,7 +1272,7 @@ class DialWindow(QWidget):
     def __init__(self, items: list[Item], size: int = 600, live_glass: bool = False):
         super().__init__(None)
         overlay_flags(self)
-        self.setWindowTitle("Gesture Rotary")
+        self.setWindowTitle("RotaryUI")
         self.setMouseTracking(True)
         self.painter_ = DialPainter(items, size)
         self.resize(self.painter_.size, self.painter_.size)

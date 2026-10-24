@@ -12,4 +12,4 @@ uv run python tools\make_icon.py || exit /b 1
 uv run pyinstaller --noconfirm --clean --distpath "%OUT%" --workpath "%WORK%" "Gesture Rotary.spec" || exit /b 1
 uv run python tools\install.py "%OUT%\Gesture Rotary" || exit /b 1
 echo.
-echo Done. Start "Gesture Rotary" from your Desktop or the Start menu.
+echo Done. Start "RotaryUI" from your Desktop or the Start menu.

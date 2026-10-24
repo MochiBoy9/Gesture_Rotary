@@ -1,7 +1,7 @@
 #!/bin/sh
-# Installs Gesture Rotary for the current user (no root needed):
+# Installs RotaryUI for the current user (no root needed):
 #   ~/.local/share/gesture-rotary/          the app
-#   ~/.local/bin/gesture-rotary             a launcher on your PATH
+#   ~/.local/bin/rotaryui, gesture-rotary   launchers on your PATH
 #   ~/.local/share/applications/…desktop    the apps-menu entry
 # ./install.sh --uninstall removes all of that (your settings in ~/.config/GestureRotary stay).
 set -eu
@@ -16,14 +16,14 @@ ICON="$DATA/icons/hicolor/256x256/apps/gesture-rotary.png"
 if [ "${1:-}" = "--uninstall" ]; then
     pkill -x gesture-rotary 2>/dev/null || true
     rm -rf "$DEST"
-    rm -f "$BIN/gesture-rotary" "$MENU" "$ICON" "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/gesture-rotary.desktop"
+    rm -f "$BIN/gesture-rotary" "$BIN/rotaryui" "$MENU" "$ICON" "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/gesture-rotary.desktop"
     command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DATA/applications" || true
-    echo "Gesture Rotary removed. (Settings are still in ${XDG_CONFIG_HOME:-$HOME/.config}/GestureRotary.)"
+    echo "RotaryUI removed. (Settings are still in ${XDG_CONFIG_HOME:-$HOME/.config}/GestureRotary.)"
     exit 0
 fi
 
 if [ ! -x "$HERE/gesture-rotary/gesture-rotary" ]; then
-    echo "Run this from the unpacked GestureRotary folder (it should contain gesture-rotary/)." >&2
+    echo "Run this from the unpacked RotaryUI folder (it should contain gesture-rotary/)." >&2
     exit 1
 fi
 
@@ -54,11 +54,12 @@ rm -rf "$DEST"
 mv "$DEST.new" "$DEST"
 cp "$HERE/gesture-rotary.png" "$ICON"
 ln -sf "$DEST/gesture-rotary" "$BIN/gesture-rotary"
+ln -sf "$DEST/gesture-rotary" "$BIN/rotaryui"
 
 cat > "$MENU" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Gesture Rotary
+Name=RotaryUI
 Comment=A rotary launcher you turn with your hand, the mouse or the keyboard
 Exec="$DEST/gesture-rotary"
 Icon=gesture-rotary
@@ -69,8 +70,8 @@ EOF
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DATA/applications" || true
 command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q "$DATA/icons/hicolor" 2>/dev/null || true
 
-echo "Gesture Rotary is installed."
-echo "Start it from your apps menu, or run: gesture-rotary"
+echo "RotaryUI is installed."
+echo "Start it from your apps menu, or run: rotaryui"
 case ":$PATH:" in *":$BIN:"*) ;; *) echo "(Add $BIN to your PATH to run it by name.)" ;; esac
 if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && [ "${1:-}" != "--no-start" ]; then
     nohup "$DEST/gesture-rotary" >/dev/null 2>&1 &

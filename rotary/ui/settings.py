@@ -1,4 +1,4 @@
-"""The Gesture Rotary window.
+"""The RotaryUI window.
 
 Pages: Welcome (first run), Rotary (items + live preview), Apps (integrations & Quick nav),
 Controls (gestures), Accessibility, Camera, General. Every change applies immediately and is
@@ -1375,7 +1375,7 @@ class AppsPage(QWidget):
         self._status_labels = {}
         self._switches = {}
         head = QHBoxLayout()
-        head.addWidget(page_header("Apps", f"Apps on this {DEVICE} that Gesture Rotary works with. Turn on Quick nav to put "
+        head.addWidget(page_header("Apps", f"Apps on this {DEVICE} that RotaryUI works with. Turn on Quick nav to put "
                                            "an app on the rotary — choosing it opens a ring of that app's own "
                                            "actions."), 1)
         refresh = QPushButton("Rescan")
@@ -1749,7 +1749,7 @@ class AccessibilityPage(QWidget):
         v = QVBoxLayout(inner)
         v.setContentsMargins(28, 24, 36, 32)
         v.setSpacing(22)
-        v.addWidget(page_header("Accessibility", "Make Gesture Rotary comfortable for your hands, eyes and ears. "
+        v.addWidget(page_header("Accessibility", "Make RotaryUI comfortable for your hands, eyes and ears. "
                                                  "Pick a quick setup, then fine-tune anything below."))
         g = GestureSettings.from_dict(self.app.cfg.get("gestures"))
         ap = self.app.cfg.get("appearance", {})
@@ -1884,7 +1884,7 @@ def set_input_mode(gen: dict, mode: str) -> None:
 
 
 class NotchPage(QWidget):
-    """Using Gesture Rotary without a camera: the notch, the mouse and the keyboard."""
+    """Using RotaryUI without a camera: the notch, the mouse and the keyboard."""
 
     def __init__(self, win: "MainWindow"):
         super().__init__()
@@ -2394,7 +2394,7 @@ class CameraPage(QWidget):
 
 
 # The license texts shipped next to the app (and at the top of the repo): (title, file).
-LICENSES = [("Gesture Rotary — MIT License", "LICENSE"), ("Third-party software", "THIRD_PARTY_NOTICES.txt"),
+LICENSES = [("RotaryUI — MIT License", "LICENSE"), ("Third-party software", "THIRD_PARTY_NOTICES.txt"),
             ("Apache License 2.0", "licenses/Apache-2.0.txt"), ("GNU LGPL 3.0", "licenses/LGPL-3.0.txt"),
             ("GNU GPL 3.0", "licenses/GPL-3.0.txt"), ("GNU LGPL 2.1", "licenses/LGPL-2.1.txt"),
             ("Python Software Foundation License", "licenses/Python.txt"),
@@ -2403,7 +2403,7 @@ COPYRIGHT = "Copyright © 2026 MochiBoy9"
 
 
 class LicensesDialog(QDialog):
-    """Gesture Rotary's license, the third-party notices and the full license texts they refer to."""
+    """RotaryUI's license, the third-party notices and the full license texts they refer to."""
 
     def __init__(self, parent=None, start: int = 0):
         super().__init__(parent)
@@ -2440,7 +2440,7 @@ class LicensesDialog(QDialog):
         try:
             self.text.setPlainText((ROOT / LICENSES[row][1]).read_text(encoding="utf-8"))
         except OSError:
-            self.text.setPlainText(f"{LICENSES[row][1]} is missing from this copy of Gesture Rotary.\n"
+            self.text.setPlainText(f"{LICENSES[row][1]} is missing from this copy of RotaryUI.\n"
                                    "See https://github.com/MochiBoy9/Gesture_Rotary")
 
 
@@ -2453,7 +2453,7 @@ class GeneralPage(QWidget):
         v = QVBoxLayout(inner)
         v.setContentsMargins(28, 24, 36, 32)
         v.setSpacing(22)
-        v.addWidget(page_header("General", f"Gesture Rotary {__version__}"))
+        v.addWidget(page_header("General", f"RotaryUI {__version__}"))
         gen = self.app.cfg.get("general", {})
         ap = self.app.cfg.get("appearance", {})
 
@@ -2559,7 +2559,7 @@ class GeneralPage(QWidget):
         b2 = QPushButton("Open logs")
         b2.clicked.connect(lambda: open_target(str(DATA_DIR / "logs")))
         c.add(Row("Diagnostics", None, b2))
-        q = QPushButton("Quit Gesture Rotary")
+        q = QPushButton("Quit RotaryUI")
         q.setObjectName("danger")
         q.clicked.connect(self.app.quit)
         c.add(Row("Stop the app and turn the camera off", None, q))
@@ -2567,7 +2567,7 @@ class GeneralPage(QWidget):
             u = QPushButton("Uninstall…")
             u.setObjectName("danger")
             u.clicked.connect(self._uninstall)
-            c.add(Row(f"Remove Gesture Rotary from this {DEVICE}", None, u))
+            c.add(Row(f"Remove RotaryUI from this {DEVICE}", None, u))
         v.addWidget(c)
         v.addStretch(1)
         lay = QVBoxLayout(self)
@@ -2592,8 +2592,8 @@ class GeneralPage(QWidget):
 
     def _uninstall(self) -> None:
         box = QMessageBox(self)
-        box.setWindowTitle("Uninstall Gesture Rotary")
-        box.setText(f"Remove Gesture Rotary from this {DEVICE}?")
+        box.setWindowTitle("Uninstall RotaryUI")
+        box.setText(f"Remove RotaryUI from this {DEVICE}?")
         box.setInformativeText("This removes the app, its shortcuts and its start-at-login entry.")
         keep = QCheckBox("Also delete my settings")
         box.setCheckBox(keep)
@@ -2614,7 +2614,7 @@ class WelcomePage(QWidget):
         v = QVBoxLayout(inner)
         v.setContentsMargins(36, 30, 40, 32)
         v.setSpacing(20)
-        v.addWidget(page_header("Welcome to Gesture Rotary",
+        v.addWidget(page_header("Welcome to RotaryUI",
                                 "Open apps and run actions by moving your hand in front of your camera. "
                                 "A few quick steps and you're set."))
 
@@ -2684,7 +2684,7 @@ class WelcomePage(QWidget):
         c.add(tw)
         v.addWidget(c)
 
-        done = QPushButton("Done — start using Gesture Rotary")
+        done = QPushButton("Done — start using RotaryUI")
         done.setObjectName("accent")
         done.setMinimumHeight(40)
         done.clicked.connect(self._done)
@@ -2819,7 +2819,7 @@ class HomePage(QWidget):
         hl.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
         col = QVBoxLayout()
         col.setSpacing(4)
-        title = QLabel("Gesture Rotary")
+        title = QLabel("RotaryUI")
         title.setObjectName("hero")
         col.addWidget(title)
         self.state = QLabel("")
@@ -2930,7 +2930,7 @@ class HomePage(QWidget):
 
 # =========================================================================== window
 class MainWindow(QWidget):
-    """The Gesture Rotary window: a floating glass sidebar (search, sections, status) beside the current
+    """The RotaryUI window: a floating glass sidebar (search, sections, status) beside the current
     page, all over a soft, blurred copy of your wallpaper."""
     # (key, label, glyph, tile colour, sidebar group)
     PAGES = [("welcome", "Welcome", "E734", "#FF9F0A", ""), ("home", "Home", "E80F", "#0A84FF", ""),
@@ -2944,7 +2944,7 @@ class MainWindow(QWidget):
         super().__init__(None)
         self.app = app
         self.setObjectName("window")
-        self.setWindowTitle("Gesture Rotary")
+        self.setWindowTitle("RotaryUI")
         widgets.UI_SCALE = float(app.cfg.get("appearance", {}).get("text_scale", 1.0))
         self.setStyleSheet(stylesheet())
         self.resize(1180, 800)
@@ -2971,7 +2971,7 @@ class MainWindow(QWidget):
         logo.setPixmap(app.app_icon.pixmap(QSize(28, 28)))
         logo.setFixedSize(28, 28)
         bh.addWidget(logo)
-        brand = QLabel("Gesture Rotary")
+        brand = QLabel("RotaryUI")
         brand.setObjectName("brand")
         bh.addWidget(brand, 1)
         sv.addLayout(bh)

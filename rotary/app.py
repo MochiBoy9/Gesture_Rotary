@@ -39,6 +39,8 @@ from .ui.notch import NotchWindow
 from .ui.pill import AMBER, BLUE, GRAY, GREEN, RED, PillWindow
 
 log = logging.getLogger(__name__)
+# These, the data folder and the installed files keep the names from before RotaryUI: they're what existing
+# installs, their taskbar pins and their updates go by.
 INSTANCE_KEY = "GestureRotary.single-instance"
 APP_ID = "GestureRotary.App"
 
@@ -487,7 +489,7 @@ class RotaryApp(QObject):
             install_changed = True
             if last and update.is_newer(__version__, last):
                 log.info("updated from %s to %s", last, __version__)
-                QTimer.singleShot(1500, lambda: self._flash_msg(f"Updated to Gesture Rotary {__version__}",
+                QTimer.singleShot(1500, lambda: self._flash_msg(f"Updated to RotaryUI {__version__}",
                                                                 "done", GREEN, 4.0))
 
         from .ui.settings import MainWindow
@@ -569,9 +571,9 @@ class RotaryApp(QObject):
 
     def _build_tray(self) -> None:
         self.tray = QSystemTrayIcon(tray_icon(True), self)
-        self.tray.setToolTip("Gesture Rotary")
+        self.tray.setToolTip("RotaryUI")
         m = QMenu()
-        m.addAction("Open Gesture Rotary", self.show_window)
+        m.addAction("Open RotaryUI", self.show_window)
         m.addAction("Open rotary now", self.manual_open)
         m.addAction("Show the tour", self.start_tutorial)
         m.addSeparator()
@@ -1000,7 +1002,7 @@ class RotaryApp(QObject):
             pct = data.get("percent", 0)
             self._alert(f"Battery low · {pct}%", "power", RED if pct <= 10 else AMBER, 5.0)
 
-    # Each app's own shortcuts. Discord has no built-in one for leaving a call: Gesture Rotary presses
+    # Each app's own shortcuts. Discord has no built-in one for leaving a call: RotaryUI presses
     # Ctrl+Shift+H, so give Discord's "Disconnect from voice channel" keybind that key (Settings → Keybinds) —
     # or set another under "island" → "discord_leave_keys" in config.json.
     CALL_KEYS = {("Discord", "mute"): ("discord", "ctrl+shift+m", ""),
@@ -1158,7 +1160,7 @@ class RotaryApp(QObject):
         def work():
             try:
                 app_name, title = modes.foreground()       # context clues for the AI: "steam", "Elden Ring on Steam"
-                if title.lower().startswith("gesture rotary"):
+                if title.lower().startswith(("rotaryui", "gesture rotary")):
                     app_name = title = ""                   # our own settings window says nothing about the screen
                 self.assist_done.emit(assist.solve(shot, cfg, app=app_name, title=title), "")
             except assist.AssistError as e:
@@ -1235,7 +1237,7 @@ class RotaryApp(QObject):
                 self._flash_msg(err[:110], "error", AMBER, 5.0)
             return
         if release is None:
-            self._set_update_note(f"Gesture Rotary {__version__} is the latest version")
+            self._set_update_note(f"RotaryUI {__version__} is the latest version")
             return
         if staged is None:                               # running from source, or a folder it can't change
             self._set_update_note(f"Version {release.version} is out. {update.unsupported()}.")
@@ -1267,7 +1269,7 @@ class RotaryApp(QObject):
             self._set_update_note(f"Couldn't install version {staged.version} ({e})")
             return
         self._set_update_note(f"Updating to {staged.version}…")
-        self._flash_msg(f"Updating to Gesture Rotary {staged.version}…", "pulse", BLUE, 5.0)
+        self._flash_msg(f"Updating to RotaryUI {staged.version}…", "pulse", BLUE, 5.0)
         QTimer.singleShot(900, self.quit)
 
     # ------------------------------------------------------------ quick nav levels
@@ -2091,8 +2093,8 @@ def main(argv: list[str] | None = None) -> int:
             pass
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(["gesture-rotary"])
-    app.setApplicationName("Gesture Rotary")
-    app.setApplicationDisplayName("Gesture Rotary")
+    app.setApplicationName("RotaryUI")
+    app.setApplicationDisplayName("RotaryUI")
     app.setQuitOnLastWindowClosed(False)
     server = _single_instance(app)
     if server is None:

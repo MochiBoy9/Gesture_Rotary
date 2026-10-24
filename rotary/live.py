@@ -5,7 +5,7 @@
     On Linux, any MPRIS player through playerctl. (macOS has no public API for this.)
   * Clips: Medal is recording a game; a clip or screenshot was just saved by Medal, Xbox Game Bar, the NVIDIA
     app or OBS.
-  * Privacy: an app is using the microphone or the camera (other than Gesture Rotary itself).
+  * Privacy: an app is using the microphone or the camera (other than RotaryUI itself).
   * Battery: plugged in / unplugged, running low.
 
 Everything runs on one background thread with its own asyncio loop (the media API is async) and reports to

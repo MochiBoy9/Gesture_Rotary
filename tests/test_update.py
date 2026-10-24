@@ -38,15 +38,26 @@ def test_release_from_github():
 
 
 def test_asset_names_match_the_release_build(tmp_path):
-    # tools/build.py names the files GestureRotary-<version>-<system>…
-    assert update.asset_name("2.0.0", None, win=True, mac=False) == "GestureRotary-2.0.0-Windows-Portable.zip"
+    # tools/build.py names the files RotaryUI-<version>-<system>…
+    assert update.asset_name("2.0.0", None, win=True, mac=False) == "RotaryUI-2.0.0-Windows-Portable.zip"
     (tmp_path / "unins000.exe").write_bytes(b"")
-    assert update.asset_name("2.0.0", tmp_path, win=True, mac=False) == "GestureRotary-2.0.0-Windows-Setup.exe"
-    assert update.asset_name("2.0.0", tmp_path, win=False, mac=True) == "GestureRotary-2.0.0-macOS.dmg"
-    assert update.asset_name("2.0.0", tmp_path, win=False, mac=False).startswith("GestureRotary-2.0.0-Linux-")
+    assert update.asset_name("2.0.0", tmp_path, win=True, mac=False) == "RotaryUI-2.0.0-Windows-Setup.exe"
+    assert update.asset_name("2.0.0", tmp_path, win=False, mac=True) == "RotaryUI-2.0.0-macOS.dmg"
+    assert update.asset_name("2.0.0", tmp_path, win=False, mac=False).startswith("RotaryUI-2.0.0-Linux-")
     build = (Path(update.__file__).parent.parent / "tools" / "build.py").read_text(encoding="utf-8")
-    for part in ("-Windows-Setup", "-Windows-Portable.zip", "-macOS.dmg", "-Linux-{arch()}"):
+    for part in ("RotaryUI-", "-Windows-Setup", "-Windows-Portable.zip", "-macOS.dmg", "-Linux-{arch()}"):
         assert part in build
+
+
+def test_releases_carry_the_names_older_copies_look_for():
+    """Copies from before RotaryUI look for GestureRotary-<version>-…: the release publishes those too, and a
+    release that only has them still updates this copy."""
+    flow = (Path(update.__file__).parent.parent / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert "GestureRotary-" in flow and "SHA256SUMS.txt" in flow
+    new, old = update.asset_name("9.0.0", None), update.asset_name("9.0.0", None, prefix="GestureRotary")
+    assert old.startswith("GestureRotary-9.0.0-")
+    assert update.pick_asset(update.Release("9.0.0", "", {new: "a", old: "b"}), None) == new
+    assert update.pick_asset(update.Release("9.0.0", "", {old: "b"}), None) == old
 
 
 def test_checksums_file():

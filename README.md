@@ -1,4 +1,4 @@
-# Gesture Rotary
+# RotaryUI
 
 **Windows · macOS · Linux**
 
@@ -14,12 +14,16 @@ Everything is bundled (Python, MediaPipe, the hand and face models), so there's 
 
 | System | Download | Install |
 | --- | --- | --- |
-| **Windows 10 / 11** (64-bit) | `GestureRotary-…-Windows-Setup.exe` | Run it. No administrator rights needed. It adds Start menu (and optionally Desktop) shortcuts and can start with Windows. If SmartScreen appears: *More info → Run anyway*. A portable `.zip` is also available. |
-| **macOS 14 Sonoma or later**, Apple silicon (M1 and later) | `GestureRotary-…-macOS.dmg` | Open it and drag **Gesture Rotary** to **Applications**. The first time, right-click the app → **Open** (on macOS 15+: try to open it, then *System Settings → Privacy & Security → Open Anyway*). |
-| **Linux** x86-64 (Ubuntu 22.04+, Debian 12+, Fedora 35+…) | `GestureRotary-…-Linux-x86_64.tar.gz` | `tar xzf GestureRotary-*.tar.gz && cd GestureRotary-*/ && ./install.sh`. This needs no root; the app appears in your apps menu and as `gesture-rotary`. |
+| **Windows 10 / 11** (64-bit) | `RotaryUI-…-Windows-Setup.exe` | Run it. No administrator rights needed. It adds Start menu (and optionally Desktop) shortcuts and can start with Windows. If SmartScreen appears: *More info → Run anyway*. A portable `.zip` is also available. |
+| **macOS 14 Sonoma or later**, Apple silicon (M1 and later) | `RotaryUI-…-macOS.dmg` | Open it and drag **RotaryUI** to **Applications**. The first time, right-click the app → **Open** (on macOS 15+: try to open it, then *System Settings → Privacy & Security → Open Anyway*). |
+| **Linux** x86-64 (Ubuntu 22.04+, Debian 12+, Fedora 35+…) | `RotaryUI-…-Linux-x86_64.tar.gz` | `tar xzf RotaryUI-*.tar.gz && cd RotaryUI-*/ && ./install.sh`. This needs no root; the app appears in your apps menu and as `rotaryui`. |
 
 Settings live in `%APPDATA%\GestureRotary` (Windows), `~/Library/Application Support/GestureRotary` (macOS) or
 `~/.config/GestureRotary` (Linux).
+
+RotaryUI was called Gesture Rotary before 2.0. The settings folder, the Windows program file (`Gesture Rotary.exe`)
+and the Linux command keep the old names so existing copies carry their settings over and keep updating; each
+release also carries its files under the old `GestureRotary-…` names for copies older than 2.0.
 
 The window stays on the taskbar or Dock. Closing it minimises it, and there's also a tray (menu bar) icon.
 Launching the app again brings the window forward. *General → Uninstall* removes it cleanly, as does
@@ -113,7 +117,7 @@ Rows marked *(Windows)* aren't available on macOS / Linux yet.
 | Now playing | YouTube and other sites in Chrome / Edge / Firefox, Spotify, Apple Music — anything Windows' media controls know (Linux: any MPRIS player, via `playerctl`; not on macOS). Album art and sound bars; hover for title, progress and ⏮ ⏯ ⏭ |
 | Clips | A red REC dot while Medal records a game *(Windows)*; "Clip saved" / "Screenshot saved" from Medal, Xbox Game Bar, the NVIDIA app or OBS |
 | Timers | Right-click → Timer. Counts down on the notch; hover for +1 min / Cancel; chimes when done |
-| Mic & camera | An orange dot while an app uses the microphone, green for the camera (Gesture Rotary itself doesn't count) *(Windows)* |
+| Mic & camera | An orange dot while an app uses the microphone, green for the camera (RotaryUI itself doesn't count) *(Windows)* |
 | Battery | Plugged in, unplugged, and low-battery alerts on laptops |
 | Calls | Time on a Discord, Teams, Zoom, Slack or other call; hover for Mute (and Deafen) and **Leave** *(Windows)* |
 | A call ringing in | The notch opens by itself, even while you use the camera: who's calling (when the app says) and the app, with **Accept** and **Decline**. Right-click has them too *(Windows)* |
@@ -153,7 +157,7 @@ The weather comes from [wttr.in](https://wttr.in), which works out roughly where
 address; switch *Weather* off to stop it asking, or set `"weather_place"` under `"appearance"` in config.json to
 a city.
 
-While it's open this way, clicks and scrolls outside the rotary stop at Gesture Rotary: the app underneath, say a
+While it's open this way, clicks and scrolls outside the rotary stop at RotaryUI: the app underneath, say a
 full-screen game or video, never gets them, and clicking the rotary or the notch never takes the focus, so nothing
 leaves full screen. The mouse button works over full-screen apps, where the notch hides. A quick middle click (or
 pressing it and dragging) still reaches the app as usual; *Accessibility → Keyboard & mouse* can use the back or
@@ -245,7 +249,7 @@ It also has:
 
 Every control in the window works with Tab, arrow keys and screen readers.
 
-## The Gesture Rotary window
+## The RotaryUI window
 
 The window opens on **Home**: whether the rotary is ready, a button to open it, every way you can open it and a
 few quick switches. The sidebar groups the rest under *Rotary*, *Features* and *System*; its search field
@@ -344,7 +348,7 @@ MediaPipe's deep file paths break Windows' 260-character path limit in long fold
 
 ## License
 
-Gesture Rotary is released under the [MIT License](LICENSE). The release builds also bundle Qt / PySide6,
+RotaryUI is released under the [MIT License](LICENSE). The release builds also bundle Qt / PySide6,
 MediaPipe and its models, OpenCV, NumPy and other libraries, each under its own license (LGPL, Apache 2.0,
 BSD, MIT and others). [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) lists them, with the full texts in
 [licenses/](licenses). The app shows them all under *General → About*, and every download includes them.

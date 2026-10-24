@@ -495,6 +495,6 @@ def execute(action: dict, cfg: dict | None = None) -> None:
         args, err = python_command(action.get("code", ""), cfg)
         _run_checked(args, "Python", err_file=err)
     elif kind in ("quicknav", "back", "assist"):
-        raise ValueError("runs inside Gesture Rotary")
+        raise ValueError("runs inside RotaryUI")
     else:
         raise ValueError(f"unknown action type '{kind}'")
