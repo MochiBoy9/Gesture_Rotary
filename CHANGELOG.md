@@ -21,6 +21,15 @@
   Let go of the pinch to stop, and pinch again to keep going. Turn it off under *Controls → Resize windows*.
   macOS needs the Accessibility permission; Linux needs `xdotool` (X11 / XWayland apps).
 
+### Added
+- **A first-run tour.** After the welcome page, new users get a short tour that floats beside the rotary: how
+  to show your palm, open the rotary with a fist or by holding still, turn it, turn it like a knob, launch with a
+  pinch or a pointed finger, put it away, change the volume with two fingers, what it ignores, and how to use it
+  all without a camera (the notch, the shortcut, the middle mouse button). Each card shows the hand shape, ticks
+  when you do the gesture and moves on. Launching is only practice while it's open. Skip it any time, and replay
+  it from *Home*, *General › Help* or the tray menu. Cards follow your settings: no fist card if a fist doesn't
+  open the rotary, no gesture cards with the camera off. Existing users aren't shown it automatically.
+
 ## [1.10.0] — Gestures in front of your face
 
 ### Changed

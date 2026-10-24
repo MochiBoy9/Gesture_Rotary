@@ -2515,6 +2515,13 @@ class GeneralPage(QWidget):
         c.add(row)
         v.addWidget(c)
 
+        c = Card("Help")
+        b = QPushButton("Take the tour")
+        b.clicked.connect(self.app.start_tutorial)
+        c.add(Row("Tutorial", "Replay the first-run tour: which hand shapes to use, and how to use the rotary "
+                              "without a camera", b))
+        v.addWidget(c)
+
         c = Card("About")
         b = QPushButton("View")
         b.clicked.connect(lambda: LicensesDialog(self, 0).exec())
@@ -2684,6 +2691,8 @@ class WelcomePage(QWidget):
         self.app.cfg.setdefault("general", {})["onboarded"] = True
         self.app.apply_config()
         self.win.finish_welcome()
+        if not self.app.cfg["general"].get("tutorial_done", False):
+            self.app.start_tutorial()           # then a one-minute tour of how to use it
 
 
 # =========================================================================== home
@@ -2823,6 +2832,9 @@ class HomePage(QWidget):
         self.pill = Switch(bool(ap.get("status_pill", True)))
         self.pill.toggled.connect(lambda on: self._ap("status_pill", on))
         c.add(Row("Status messages", "Short notes at the top of the screen", self.pill))
+        tour = QPushButton("Take the tour")
+        tour.clicked.connect(self.app.start_tutorial)
+        c.add(Row("Tutorial", "A one-minute tour of the hand shapes, the notch and the mouse", tour))
         v.addWidget(c)
 
         t = QLabel("ALL SETTINGS")

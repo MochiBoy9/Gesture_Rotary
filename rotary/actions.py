@@ -145,6 +145,7 @@ DEFAULT_CONFIG = {
         "keep_in_taskbar": True,
         "start_minimized": True,
         "onboarded": False,
+        "tutorial_done": False,      # the first-run tour has been finished or skipped (Home replays it)
         "hotkey": "ctrl+alt+space",
         "python": "auto",
         "camera": True,              # hand gestures through the camera
@@ -250,6 +251,9 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
         cfg["items"] = data["items"]
     if "onboarded" not in (data.get("general") or {}):
         cfg["general"]["onboarded"] = False         # existing users get the (short) welcome once
+    if "tutorial_done" not in (data.get("general") or {}):
+        # The tour is for new users: anyone who already set the app up has been using it without one.
+        cfg["general"]["tutorial_done"] = bool((data.get("general") or {}).get("onboarded", False))
     _repair_items(cfg.get("items", []))
     ap = cfg.get("appearance") or {}
     if int(data.get("version", 0) or 0) < 3 and ap.get("dial_size") == 600:
