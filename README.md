@@ -1,4 +1,4 @@
-# Gesture Rotary
+# RotaryUI
 
 **Windows · macOS · Linux**
 
@@ -14,12 +14,16 @@ Everything is bundled (Python, MediaPipe, the hand and face models), so there's 
 
 | System | Download | Install |
 | --- | --- | --- |
-| **Windows 10 / 11** (64-bit) | `GestureRotary-…-Windows-Setup.exe` | Run it. No administrator rights needed. It adds Start menu (and optionally Desktop) shortcuts and can start with Windows. If SmartScreen appears: *More info → Run anyway*. A portable `.zip` is also available. |
-| **macOS 14 Sonoma or later**, Apple silicon (M1 and later) | `GestureRotary-…-macOS.dmg` | Open it and drag **Gesture Rotary** to **Applications**. The first time, right-click the app → **Open** (on macOS 15+: try to open it, then *System Settings → Privacy & Security → Open Anyway*). |
-| **Linux** x86-64 (Ubuntu 22.04+, Debian 12+, Fedora 35+…) | `GestureRotary-…-Linux-x86_64.tar.gz` | `tar xzf GestureRotary-*.tar.gz && cd GestureRotary-*/ && ./install.sh`. This needs no root; the app appears in your apps menu and as `gesture-rotary`. |
+| **Windows 10 / 11** (64-bit) | `RotaryUI-…-Windows-Setup.exe` | Run it. No administrator rights needed. It adds Start menu (and optionally Desktop) shortcuts and can start with Windows. If SmartScreen appears: *More info → Run anyway*. A portable `.zip` is also available. |
+| **macOS 14 Sonoma or later**, Apple silicon (M1 and later) | `RotaryUI-…-macOS.dmg` | Open it and drag **RotaryUI** to **Applications**. The first time, right-click the app → **Open** (on macOS 15+: try to open it, then *System Settings → Privacy & Security → Open Anyway*). |
+| **Linux** x86-64 (Ubuntu 22.04+, Debian 12+, Fedora 35+…) | `RotaryUI-…-Linux-x86_64.tar.gz` | `tar xzf RotaryUI-*.tar.gz && cd RotaryUI-*/ && ./install.sh`. This needs no root; the app appears in your apps menu and as `rotaryui`. |
 
 Settings live in `%APPDATA%\GestureRotary` (Windows), `~/Library/Application Support/GestureRotary` (macOS) or
 `~/.config/GestureRotary` (Linux).
+
+RotaryUI was called Gesture Rotary before 2.0. The settings folder, the Windows program file (`Gesture Rotary.exe`)
+and the Linux command keep the old names so existing copies carry their settings over and keep updating; each
+release also carries its files under the old `GestureRotary-…` names for copies older than 2.0.
 
 The window stays on the taskbar or Dock. Closing it minimises it, and there's also a tray (menu bar) icon.
 Launching the app again brings the window forward. *General → Uninstall* removes it cleanly, as does
@@ -50,7 +54,16 @@ running from source, it just says a new version is out.
 - The keyboard shortcut and pressing keys work through X11. Under Wayland they only reach XWayland apps, so use
   the notch or the tray icon to open the rotary.
 - Optional: `playerctl` for *now playing* on the notch, `speech-dispatcher` or `espeak-ng` for spoken item
-  names, and `wmctrl` for items that press a shortcut inside another app.
+  names, `wmctrl` for items that press a shortcut inside another app, and `xdotool` for resizing windows with both hands.
+
+## The tour
+
+The first time you set the app up, a short tour floats beside the rotary: which hand shapes to use (an open palm,
+a fist, a pinch, a pointed finger, two fingers for the volume), how to put the rotary away, and how to do it all
+without a camera from the notch, the mouse and the keyboard. Each card has a drawing of the hand shape, and when you
+do the gesture it ticks and moves on by itself. Launching an item while the tour is up is only practice, so nothing
+opens. *Skip tour* (or Esc) closes it. Replay it any time with *Take the tour* on *Home* or *General › Help*, or
+*Show the tour* in the tray menu. With the camera off, the tour skips the gestures.
 
 ## Using it (palm toward the camera)
 
@@ -60,13 +73,16 @@ running from source, it just says a new version is out.
 | **Hold your palm still** (3 s by default, as low as 0.5 s) | Opens |
 | **Lean** your hand (Tilt), **slide** it (Move), or **turn** it (Follow), then hold | Keeps scrolling until you straighten or return to the middle |
 | **Point** with your index finger, move it aside, hold | Scrolls; **push** toward the camera to click |
-| **Fist**: **tilt** it like turning a knob | Turns one firm click per item and stays there. Open your hand briefly and close it again to re-grip without moving the ring |
+| **Fist**: **tilt** it like turning a knob | Turns one firm click per item and stays there. Open your hand briefly and close it again to re-grip without moving the ring. Or, like an open palm, **hold your fist turned** to one side and it keeps turning by itself until you turn back |
 | Fist: **point** your index finger | Launches the selected item |
 | Open hand for 1.5 s | Back to palm mode: **pinch** or **hold still** on an item launches |
 | Back of the hand, or lower it | Closes |
-| **Index + middle finger up**, slide up or down | Changes the volume, like a fader, whether the rotary is open or not |
+| **Index + middle finger up**, slide up or down | Changes the volume, whether the rotary is open or not: a full-size volume ring appears in a corner of the screen (*Controls → Volume ring corner*) and turns with the level |
+| **Pinch with both hands**, then pull apart or push together | Resizes the window in front (if it's windowed): side by side changes the width, one above the other the height, opposite corners both. Let go of the pinch to stop |
 | **Ctrl + Alt + Space** (Mac: **⌃⌥Space**) | Opens from the keyboard: ← → move, Enter launches, Esc closes |
 | **Hold the middle mouse button** | Opens for the mouse, even over a full-screen game (or a side button: *Accessibility*) |
+
+Whenever the rotary is on screen — however you opened it — the mouse works on it directly: **scroll over the ring** to turn it, **drag it around** like a knob, and **click an item or the centre** to launch it. These never reach the app underneath, so it works the same over a browser, a game or the desktop. (On Linux the mouse can turn the ring but the app underneath may see the clicks too.)
 
 ### Slides and videos
 
@@ -101,8 +117,10 @@ Rows marked *(Windows)* aren't available on macOS / Linux yet.
 | Now playing | YouTube and other sites in Chrome / Edge / Firefox, Spotify, Apple Music — anything Windows' media controls know (Linux: any MPRIS player, via `playerctl`; not on macOS). Album art and sound bars; hover for title, progress and ⏮ ⏯ ⏭ |
 | Clips | A red REC dot while Medal records a game *(Windows)*; "Clip saved" / "Screenshot saved" from Medal, Xbox Game Bar, the NVIDIA app or OBS |
 | Timers | Right-click → Timer. Counts down on the notch; hover for +1 min / Cancel; chimes when done |
-| Mic & camera | An orange dot while an app uses the microphone, green for the camera (Gesture Rotary itself doesn't count) *(Windows)* |
+| Mic & camera | An orange dot while an app uses the microphone, green for the camera (RotaryUI itself doesn't count) *(Windows)* |
 | Battery | Plugged in, unplugged, and low-battery alerts on laptops |
+| Calls | Time on a Discord, Teams, Zoom, Slack or other call; hover for Mute (and Deafen) and **Leave** *(Windows)* |
+| A call ringing in | The notch opens by itself, even while you use the camera: who's calling (when the app says) and the app, with **Accept** and **Decline**. Right-click has them too *(Windows)* |
 
 Saved clips and finished timers can pop the notch up briefly over borderless full-screen games (never over
 exclusive full-screen ones). *Look* switches between Dark (like a real notch) and Glass (more see-through).
@@ -119,13 +137,27 @@ exclusive full-screen ones). *Look* switches between Dark (like a real notch) an
 
 Hover the notch for a moment with nothing playing on it and it says *Click to open wheel*.
 
+**Moving the notch.** Drag it along the top edge to slide it sideways. Pull it down and it stretches like a drop of
+liquid until it tears off; then put it anywhere. Let go while it's moving and it's thrown: it glides, bounces off
+the sides and bottom of the screen, and merges back into the top edge if it flies (or is dragged) up to it. It
+stays where you left it, next time too. A **middle click** on it (press the scroll wheel) sends it back to the
+middle of the top edge; so does *Put the notch back in the middle* in its right-click menu.
+
+**Calls ringing in** are noticed two ways: a call app's own "incoming call" window (its title says who's calling),
+or a call app — not already in a call — playing its ringtone for a few seconds. *Accept* and *Decline* press the
+app's own shortcuts: Discord Ctrl + Enter / Esc, Teams Ctrl + Shift + S / Ctrl + Shift + D. Apps without one
+(WhatsApp, Telegram, Signal…) are brought to the front to answer there; Decline just puts the card away.
+**Leave** presses Teams' and Slack's Ctrl + Shift + H and Zoom's Alt + Q. Discord has no built-in key for leaving
+a call: give its *Disconnect from voice channel* keybind **Ctrl + Shift + H** (*User Settings → Keybinds*), or
+set the key you use as `"discord_leave_keys"` under `"island"` in config.json.
+
 Under the ring the rotary shows the time (9:41 AM, or 24-hour under *General → Appearance*), the date and the
 weather: an icon for sun, cloud, fog, rain, snow or a storm, and the temperature (°F in the US, °C elsewhere).
 The weather comes from [wttr.in](https://wttr.in), which works out roughly where you are from your internet
 address; switch *Weather* off to stop it asking, or set `"weather_place"` under `"appearance"` in config.json to
 a city.
 
-While it's open this way, clicks and scrolls outside the rotary stop at Gesture Rotary: the app underneath, say a
+While it's open this way, clicks and scrolls outside the rotary stop at RotaryUI: the app underneath, say a
 full-screen game or video, never gets them, and clicking the rotary or the notch never takes the focus, so nothing
 leaves full screen. The mouse button works over full-screen apps, where the notch hides. A quick middle click (or
 pressing it and dragging) still reaches the app as usual; *Accessibility → Keyboard & mouse* can use the back or
@@ -165,12 +197,14 @@ password is encrypted for your Windows account (on a Mac it goes in your Keychai
 
 Press **Win + Alt + A** (Mac: **⌃⌥A**, Linux: **Super + Alt + A**). You can also choose *Screen assist* on the rotary, or right-click the
 notch → *Solve what's on screen*. An AI looks at your screen, finds the question or problem on it and answers
-on the notch:
+on the notch. It always attempts an answer:
 
 - **Multiple choice**: the option to pick in a badge, then its text, e.g. **B** · Mitochondria.
 - **Anything else** (maths, a puzzle, an error message, a bug in code, a form): a short answer, e.g. `x = 4`.
-- **Hover** the answer for a sentence on why, plus *Copy*. **Click** it to put it away. Otherwise it stays
-  for 20 seconds (or 10 / 45 / 90).
+- **No question on screen**: it goes by context clues (what you typed into Google or the address bar, selected
+  text, the window title) or sums up what's there, e.g. a Steam store page → what the game is, its price and reviews.
+- **Hover** the answer for a longer, detailed one (the working, why, next steps), plus *Copy*, which copies that
+  detailed answer. **Click** it to put it away. Otherwise it stays for 20 seconds (or 10 / 45 / 90).
 
 It works with free AI services, or with your own paid account. Pick one on the *Screen assist* page:
 
@@ -215,7 +249,7 @@ It also has:
 
 Every control in the window works with Tab, arrow keys and screen readers.
 
-## The Gesture Rotary window
+## The RotaryUI window
 
 The window opens on **Home**: whether the rotary is ready, a button to open it, every way you can open it and a
 few quick switches. The sidebar groups the rest under *Rotary*, *Features* and *System*; its search field
@@ -264,6 +298,7 @@ Everywhere:
 uv run pytest -q                        # gestures, glass, notch, live activities, Quick nav, OBS, screen assist…
 uv run python tools/render_dial.py out  # render rotary states to PNGs
 uv run python tools/render_notch.py out # render the notch's states to one PNG
+uv run python tools/render_tutorial.py out  # render every card of the first-run tour (--mouse: camera off)
 uv run python tools/shot_window.py out  # screenshots of the window's pages
 uv run python tools/selftest.py out     # boot against the real camera, report fps
 uv run python tools/build.py            # build the installer for this system into release/
@@ -313,7 +348,7 @@ MediaPipe's deep file paths break Windows' 260-character path limit in long fold
 
 ## License
 
-Gesture Rotary is released under the [MIT License](LICENSE). The release builds also bundle Qt / PySide6,
+RotaryUI is released under the [MIT License](LICENSE). The release builds also bundle Qt / PySide6,
 MediaPipe and its models, OpenCV, NumPy and other libraries, each under its own license (LGPL, Apache 2.0,
 BSD, MIT and others). [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) lists them, with the full texts in
 [licenses/](licenses). The app shows them all under *General → About*, and every download includes them.

@@ -5,7 +5,7 @@ import math
 import time
 
 import numpy as np
-from PySide6.QtCore import QLocale, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QLocale, QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QCursor, QFont, QFontMetricsF, QGuiApplication, QLinearGradient,
                            QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRadialGradient, QTransform)
 from PySide6.QtWidgets import QWidget
@@ -1248,6 +1248,20 @@ class DialPainter:
         return text[0].upper() + text[1:] + " to open"
 
 
+CORNERS = ("top-left", "top-right", "bottom-left", "bottom-right")
+
+
+def spot(area: QRect, w: int, h: int, corner: str = "", margin: int = 0) -> QPoint:
+    """Top-left of a w × h window in the middle of `area`, or tucked into one of its corners (the window's own
+    transparent margin, the glow around the ring, already keeps the ring off the edge)."""
+    if corner not in CORNERS:
+        return QPoint(area.center().x() - w // 2, area.center().y() - h // 2)
+    inset = max(0, 24 - margin)
+    x = area.left() + inset if corner.endswith("left") else area.right() + 1 - w - inset
+    y = area.top() + inset if corner.startswith("top") else area.bottom() + 1 - h - inset
+    return QPoint(x, y)
+
+
 class DialWindow(QWidget):
     """The rotary on screen. Opened by a gesture it lets every click through; opened from the notch or the
     keyboard it also takes the mouse: scroll or drag the ring to turn it, click an item to choose it,
@@ -1258,7 +1272,7 @@ class DialWindow(QWidget):
     def __init__(self, items: list[Item], size: int = 600, live_glass: bool = False):
         super().__init__(None)
         overlay_flags(self)
-        self.setWindowTitle("Gesture Rotary")
+        self.setWindowTitle("RotaryUI")
         self.setMouseTracking(True)
         self.painter_ = DialPainter(items, size)
         self.resize(self.painter_.size, self.painter_.size)
@@ -1267,6 +1281,7 @@ class DialWindow(QWidget):
         self._excluded = False
         self._drag: dict | None = None
         self._wheel = 0
+        self.corner = ""                  # "" = the middle of the screen, or the volume ring's corner
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.setInterval(16)
@@ -1326,8 +1341,8 @@ class DialWindow(QWidget):
             self._set_interactive(interactive)
             self._drag = None
             screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
-            g = screen.availableGeometry()
-            self.move(g.center().x() - self.width() // 2, g.center().y() - self.height() // 2)
+            self.move(spot(screen.availableGeometry(), self.width(), self.height(), self.corner,
+                           self.painter_.MARGIN))
             raw = grab_behind(self)
             dp.backdrop = liquid.Backdrop.from_pixmap(raw)
             hz = screen.refreshRate() or 60.0          # one frame per screen refresh, no more
@@ -1344,6 +1359,23 @@ class DialWindow(QWidget):
         dp.begin(state)
         self._last = time.perf_counter()
         self._timer.start()
+
+    def place(self, corner: str) -> None:
+        """Move the open rotary to a corner of its screen ("top-left"…) or back to the middle ("")."""
+        self.corner = corner
+        if not self.isVisible():
+            return
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        pos = spot(screen.availableGeometry(), self.width(), self.height(), corner, self.painter_.MARGIN)
+        if pos == self.pos():
+            return
+        self.hide()                       # out of the way while the glass picks up what's behind its new place
+        self.move(pos)
+        bd = liquid.Backdrop.from_pixmap(grab_behind(self))
+        if bd is not None:
+            self.painter_.backdrop = bd
+        self.show()
+        no_activate(self)
 
     def set_state(self, state: EngineSnapshot) -> None:
         self.painter_.set_state(state)
@@ -1420,56 +1452,40 @@ class DialWindow(QWidget):
             return "ring", 0
         return "", 0
 
-    def mousePressEvent(self, ev) -> None:
-        if not self.interactive:
-            return
-        if ev.button() == Qt.MouseButton.RightButton:
-            self.mouse.emit("back", 0)
-            return
-        if ev.button() != Qt.MouseButton.LeftButton:
-            return
-        kind, idx = self.hit(ev.position())
-        _x, _y, _r, a = self._local(ev.position())
-        self._drag = {"kind": kind, "idx": idx, "angle": a, "acc": 0.0, "moved": 0.0, "dragging": False}
-        if kind == "ring":
+    # The same press / drag / release comes from the window itself (opened for the mouse) or, wherever the
+    # rotary is on screen however it was opened, from the mouse hook (mouse.py), in window coordinates.
+    def press_at(self, pt, src: str = "window") -> None:
+        kind, idx = self.hit(pt)
+        _x, _y, _r, a = self._local(pt)
+        self._drag = {"kind": kind, "idx": idx, "angle": a, "acc": 0.0, "moved": 0.0, "dragging": False, "src": src}
+        if kind == "ring" and src == "window":
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
-    def mouseMoveEvent(self, ev) -> None:
-        if not self.interactive:
-            return
+    def drag_to(self, pt) -> None:
         d = self._drag
-        if d is not None and d["kind"] in ("item", "ring"):
-            _x, _y, _r, a = self._local(ev.position())
-            da = _wrap180(a - d["angle"])
-            d["angle"] = a
-            d["acc"] += da
-            d["moved"] += abs(da)
-            if d["moved"] > 6:
-                d["dragging"] = True
-            step = 360.0 / max(1, len(self.painter_.items))
-            while d["dragging"] and abs(d["acc"]) >= step * 0.75:
-                # turning the ring clockwise brings the previous item under the lens
-                sgn = 1 if d["acc"] > 0 else -1
-                d["acc"] -= sgn * step
-                self.mouse.emit("turn", -sgn)
+        if d is None or d["kind"] not in ("item", "ring", "centre"):
             return
-        kind, _idx = self.hit(ev.position())
-        hot = kind == "volume"
-        if hot != self.painter_.volume_hot:
-            self.painter_.volume_hot = hot
-        self.setCursor(Qt.CursorShape.PointingHandCursor if kind in ("item", "centre", "volume", "back")
-                       else (Qt.CursorShape.OpenHandCursor if kind == "ring" else Qt.CursorShape.ArrowCursor))
+        _x, _y, r, a = self._local(pt)
+        if r < 12:
+            return                            # right on the centre the angle is meaningless
+        da = _wrap180(a - d["angle"])
+        d["angle"] = a
+        d["acc"] += da
+        d["moved"] += abs(da)
+        if d["moved"] > 6:
+            d["dragging"] = True
+        step = 360.0 / max(1, len(self.painter_.items))
+        while d["dragging"] and abs(d["acc"]) >= step * 0.75:
+            # turning the ring clockwise brings the previous item under the lens
+            sgn = 1 if d["acc"] > 0 else -1
+            d["acc"] -= sgn * step
+            self.mouse.emit("turn", -sgn)
 
-    def leaveEvent(self, ev) -> None:
-        self.painter_.volume_hot = False
-
-
-
-    def mouseReleaseEvent(self, ev) -> None:
+    def release_at(self, pt) -> None:
         d, self._drag = self._drag, None
-        if not self.interactive or d is None or ev.button() != Qt.MouseButton.LeftButton or d["dragging"]:
+        if d is None or d["dragging"]:
             return
-        kind, idx = self.hit(ev.position())
+        kind, idx = self.hit(pt)
         if kind == "back" and d["kind"] == "back":
             self.mouse.emit("back", 0)
         elif kind == "volume" and d["kind"] == "volume":
@@ -1483,6 +1499,44 @@ class DialWindow(QWidget):
             else:
                 self.mouse.emit("select", idx)
 
+    @property
+    def dragging(self) -> bool:
+        return bool((self._drag or {}).get("dragging"))
+
+    def mousePressEvent(self, ev) -> None:
+        if not self.interactive:
+            return
+        if ev.button() == Qt.MouseButton.RightButton:
+            self.mouse.emit("back", 0)
+            return
+        if ev.button() != Qt.MouseButton.LeftButton:
+            return
+        self.press_at(ev.position())
+
+    def mouseMoveEvent(self, ev) -> None:
+        if not self.interactive:
+            return
+        d = self._drag
+        if d is not None and d["kind"] in ("item", "ring", "centre"):
+            if d["src"] == "window":
+                self.drag_to(ev.position())
+            return                            # the hook's drag: it reports the moves itself
+        kind, _idx = self.hit(ev.position())
+        hot = kind == "volume"
+        if hot != self.painter_.volume_hot:
+            self.painter_.volume_hot = hot
+        self.setCursor(Qt.CursorShape.PointingHandCursor if kind in ("item", "centre", "volume", "back")
+                       else (Qt.CursorShape.OpenHandCursor if kind == "ring" else Qt.CursorShape.ArrowCursor))
+
+    def leaveEvent(self, ev) -> None:
+        self.painter_.volume_hot = False
+
+    def mouseReleaseEvent(self, ev) -> None:
+        if not self.interactive or ev.button() != Qt.MouseButton.LeftButton:
+            return
+        if self._drag is not None and self._drag["src"] == "window":
+            self.release_at(ev.position())
+
     def wheelEvent(self, ev) -> None:
         if not self.interactive:
             return
@@ -1493,3 +1547,45 @@ class DialWindow(QWidget):
             self._wheel += 120 if self._wheel < 0 else -120
             self.mouse.emit("turn", step)
         ev.accept()
+
+
+class VolumeRing(DialWindow):
+    """The volume as a ring of its own, full size, in a corner of the screen (Controls → Volume, slides and
+    videos). It shows up while two fingers slide the volume, whether the rotary is open or not, turns with the
+    level on the same springs as the rotary, and fades away a moment after the last change. Clicks go through."""
+
+    def __init__(self, ticks: int, tint: str, size: int = 600, live_glass: bool = False):
+        self._item = Item("Volume", "", "", tint, {"type": "mode"})
+        super().__init__([self._item], size, live_glass)
+        self.ticks = max(1, ticks)
+        self.painter_.clock_mode = "off"
+        self._idle = QTimer(self)
+        self._idle.setSingleShot(True)
+        self._idle.setInterval(1600)
+        self._idle.timeout.connect(self.close_dial)
+
+    def _state(self, level: float) -> EngineSnapshot:
+        pos = max(0.0, min(1.0, level)) * self.ticks
+        # grip_mode: the ring follows the level exactly instead of snapping to its ticks
+        return EngineSnapshot(phase=Phase.OPEN, hand_present=True, facing=True, sliding=True, grip_mode=True,
+                              position=pos, selected=int(round(pos)) % self.ticks)
+
+    def show_level(self, level: float, corner: str) -> None:
+        st = self._state(level)
+        dp = self.painter_
+        if not self.isVisible() or dp.appear.target == 0.0:
+            if not self.isVisible():
+                self.corner = corner
+            dp.set_mode("volume", [self._item] * self.ticks, {"top": "Volume"}, st)
+            self.open(st)
+            if not dp.reduce_motion:
+                dp.rot.snap(0.0)              # it turns itself round to the level, like the volume ring
+                dp.rot.target = st.position
+        else:
+            self.set_state(st)
+        self._idle.start()
+
+    def hide_now(self) -> None:
+        self._idle.stop()
+        if self.isVisible():
+            self.close_dial()

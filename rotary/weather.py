@@ -88,7 +88,7 @@ def parse(data: dict, now: time.struct_time | None = None) -> Weather | None:
 def fetch(place: str = "", timeout: float = 8.0) -> Weather | None:
     url = URL.format(place=urllib.parse.quote(place.strip()))
     from .assist import _ssl_context        # the packaged Mac app has no system CA path of its own
-    req = urllib.request.Request(url, headers={"User-Agent": "GestureRotary", "Accept": "application/json"})
+    req = urllib.request.Request(url, headers={"User-Agent": "RotaryUI", "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as r:
         return parse(json.loads(r.read(2_000_000).decode("utf-8", "replace")))
 

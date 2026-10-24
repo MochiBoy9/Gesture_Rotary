@@ -1,6 +1,6 @@
 # PyInstaller spec for Windows, macOS and Linux — build with tools/build.py (or build_exe.bat on Windows)
 #   Windows  dist/Gesture Rotary/Gesture Rotary.exe
-#   macOS    dist/Gesture Rotary.app
+#   macOS    dist/RotaryUI.app  (Windows and Linux keep the program's file names from before RotaryUI)
 #   Linux    dist/gesture-rotary/gesture-rotary
 import json
 import os
@@ -109,22 +109,22 @@ coll = COLLECT(exe, a.binaries, a.datas, name=NAME, upx=False)
 if MAC:
     app = BUNDLE(
         coll,
-        name="Gesture Rotary.app",
+        name="RotaryUI.app",
         icon="assets/icon.icns",
         bundle_identifier="app.gesturerotary",
         version=__version__,
         info_plist={
-            "CFBundleName": "Gesture Rotary",
-            "CFBundleDisplayName": "Gesture Rotary",
+            "CFBundleName": "RotaryUI",
+            "CFBundleDisplayName": "RotaryUI",
             "CFBundleShortVersionString": __version__,
             "CFBundleVersion": __version__,
             "LSMinimumSystemVersion": "14.0",
             "LSApplicationCategoryType": "public.app-category.productivity",
             "NSHighResolutionCapable": True,
             "NSRequiresAquaSystemAppearance": False,
-            "NSCameraUsageDescription": "Gesture Rotary watches for your hand so you can open and turn the "
+            "NSCameraUsageDescription": "RotaryUI watches for your hand so you can open and turn the "
                                         "rotary with gestures. Video never leaves your Mac.",
-            "NSAppleEventsUsageDescription": "Gesture Rotary opens Terminal for commands you add to the rotary.",
+            "NSAppleEventsUsageDescription": "RotaryUI opens Terminal for commands you add to the rotary.",
             "NSHumanReadableCopyright": "Copyright © 2026 MochiBoy9. MIT License.",
         },
     )

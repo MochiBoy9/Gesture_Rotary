@@ -1,4 +1,4 @@
-"""The Gesture Rotary window.
+"""The RotaryUI window.
 
 Pages: Welcome (first run), Rotary (items + live preview), Apps (integrations & Quick nav),
 Controls (gestures), Accessibility, Camera, General. Every change applies immediately and is
@@ -1375,7 +1375,7 @@ class AppsPage(QWidget):
         self._status_labels = {}
         self._switches = {}
         head = QHBoxLayout()
-        head.addWidget(page_header("Apps", f"Apps on this {DEVICE} that Gesture Rotary works with. Turn on Quick nav to put "
+        head.addWidget(page_header("Apps", f"Apps on this {DEVICE} that RotaryUI works with. Turn on Quick nav to put "
                                            "an app on the rotary — choosing it opens a ring of that app's own "
                                            "actions."), 1)
         refresh = QPushButton("Rescan")
@@ -1556,6 +1556,9 @@ class GesturesPage(QWidget):
         self.dist_row = c.add(Row("Move distance", "How far you slide your hand before it moves", self.dist))
         self.speed = SliderControl(0.4, 2.5, 0.1, g.scroll_speed, lambda x: f"{x:.1f}×")
         self.speed_row = c.add(Row("Scroll speed", "How quickly it keeps going while you hold", self.speed))
+        self.grip_auto = SliderControl(0.0, 2.0, 0.1, g.grip_auto_seconds, lambda x: "Off" if x <= 0 else f"{x:.1f} s")
+        c.add(Row("Fist keeps turning", "Hold your fist turned this long and the ring keeps going by itself, "
+                                        "until you turn back", self.grip_auto))
         v.addWidget(c)
 
         c = Card("Launching", "Point with your index finger while the rotary is open to use finger controls.")
@@ -1572,7 +1575,7 @@ class GesturesPage(QWidget):
         c.add(Row("Push sensitivity", None, self.push_s))
         v.addWidget(c)
 
-        c = Card("Volume, slides and videos", "Two fingers change the volume whether the rotary is open or not. "
+        c = Card("Volume, windows, slides and videos", "Two fingers change the volume whether the rotary is open or not. "
                                              "Over a slideshow or a video the rotary opens as a slides or video "
                                              "ring; click its centre, pinch or point for your items instead.")
         self.vol = Switch(g.volume_slide)
@@ -1584,6 +1587,15 @@ class GesturesPage(QWidget):
         self.video = Switch(bool(mc["video"]))
         c.add(Row("Video ring", "Over YouTube, Netflix, Hulu, VLC and other players: a full turn is the whole "
                                 "video", self.video))
+        self.winsize = Switch(g.window_resize)
+        c.add(Row("Resize windows", "Pinch with both hands, then pull apart or push together. Side by side "
+                                    "changes the width, one above the other the height, opposite corners both",
+                  self.winsize))
+        self.vol_corner = Segmented([("top-left", "Top left"), ("top-right", "Top right"),
+                                     ("bottom-left", "Bottom left"), ("bottom-right", "Bottom right")], self._corner())
+        self.vol_corner.setFixedWidth(400)
+        c.add(Row("Volume ring corner", "The volume gets a full-size ring of its own, in this corner of the "
+                                        "screen", self.vol_corner))
         v.addWidget(c)
 
         c = Card("Recognition")
@@ -1622,13 +1634,19 @@ class GesturesPage(QWidget):
         self.push.toggled.connect(lambda on: self.set("finger_push", on))
         self.push_s.changed.connect(lambda x: self.set("push_sensitivity", x))
         self.vol.toggled.connect(lambda on: self.set("volume_slide", on))
+        self.winsize.toggled.connect(lambda on: self.set("window_resize", on))
         self.slides.toggled.connect(lambda on: self._mode("slides", on))
         self.video.toggled.connect(lambda on: self._mode("video", on))
+        self.vol_corner.changed.connect(lambda k: self._mode("volume_corner", k))
+        self.grip_auto.changed.connect(lambda x: self.set("grip_auto_seconds", x))
         self.refresh()
 
-    def _mode(self, key: str, on: bool) -> None:
+    def _mode(self, key: str, on) -> None:
         self.app.cfg.setdefault("modes", {})[key] = on
         self.app.apply_config()
+
+    def _corner(self) -> str:
+        return (self.app.cfg.get("modes") or {}).get("volume_corner", "bottom-right")
 
     def g(self) -> GestureSettings:
         return GestureSettings.from_dict(self.app.cfg.get("gestures"))
@@ -1672,9 +1690,12 @@ class GesturesPage(QWidget):
         self.push.set_silent(g.finger_push)
         self.push_s.set_value(g.push_sensitivity)
         self.vol.set_silent(g.volume_slide)
+        self.winsize.set_silent(g.window_resize)
         mc = {"slides": True, "video": True, **(self.app.cfg.get("modes") or {})}
         self.slides.set_silent(bool(mc["slides"]))
         self.video.set_silent(bool(mc["video"]))
+        self.vol_corner.set_value(self._corner())
+        self.grip_auto.set_value(g.grip_auto_seconds)
         self.cal_label.setText("Flipped" if g.flip_handedness else "Standard")
         self._texts()
 
@@ -1728,7 +1749,7 @@ class AccessibilityPage(QWidget):
         v = QVBoxLayout(inner)
         v.setContentsMargins(28, 24, 36, 32)
         v.setSpacing(22)
-        v.addWidget(page_header("Accessibility", "Make Gesture Rotary comfortable for your hands, eyes and ears. "
+        v.addWidget(page_header("Accessibility", "Make RotaryUI comfortable for your hands, eyes and ears. "
                                                  "Pick a quick setup, then fine-tune anything below."))
         g = GestureSettings.from_dict(self.app.cfg.get("gestures"))
         ap = self.app.cfg.get("appearance", {})
@@ -1863,7 +1884,7 @@ def set_input_mode(gen: dict, mode: str) -> None:
 
 
 class NotchPage(QWidget):
-    """Using Gesture Rotary without a camera: the notch, the mouse and the keyboard."""
+    """Using RotaryUI without a camera: the notch, the mouse and the keyboard."""
 
     def __init__(self, win: "MainWindow"):
         super().__init__()
@@ -1892,6 +1913,11 @@ class NotchPage(QWidget):
         c.add(Row("Tuck it away", "Just a thin line until your mouse reaches the top of the screen", self.peek))
         self.fs = Switch(bool(gen.get("notch_hide_fullscreen", True)))
         c.add(Row("Hide during full-screen games and videos", None, self.fs))
+        home = QPushButton("Put it back")
+        home.clicked.connect(lambda: self.app.notch.go_home())
+        c.add(Row("Where it sits", "Drag the notch along the top, or pull it down until it tears off and put it "
+                                   "anywhere — throw it and it glides. A middle click on it sends it home to the "
+                                   "middle of the top edge.", home))
         v.addWidget(c)
 
         isl = {**DEFAULT_ISLAND, **(self.app.cfg.get("island") or {})}
@@ -1916,7 +1942,8 @@ class NotchPage(QWidget):
                                        "is saved" + (f" — watching {', '.join(dict.fromkeys(found))}" if found else ""),
                   self.clips))
         self.calls = Switch(bool(isl["calls"]))
-        c.add(Row("Calls", "Time on a Discord, Teams, Zoom or other call, with Mute (and Deafen) on hover",
+        c.add(Row("Calls", "A call ringing in pops up with Accept and Decline (even while you use the camera); "
+                           "time on a Discord, Teams, Zoom or other call, with Mute, Deafen and Leave on hover",
                   self.calls))
         self.privacy = Switch(bool(isl["privacy"]))
         c.add(Row("Microphone & camera in use", "An orange dot while an app listens, green while one watches",
@@ -2204,8 +2231,9 @@ class AssistPage(QWidget):
         how = f"Press {label}, choose" if label and a["hotkey"] != "off" else "Choose"
         self.intro.setText(
             f"{how} Screen assist on the rotary, or right-click the notch, and an AI looks at your screen, finds the "
-            "question or problem on it and answers on the notch. For multiple choice it tells you which option "
-            "(A, B, C…). It works with free AI services, or with your own paid Claude, ChatGPT or Gemini account.")
+            "question or problem on it and answers on the notch; with no question it goes by context clues or sums "
+            "up the screen. For multiple choice it tells you which option (A, B, C…). Hover the answer for a longer, "
+            "detailed one. It works with free AI services, or with your own paid Claude, ChatGPT or Gemini account.")
         self.provider.blockSignals(True)
         self.provider.setCurrentIndex(max(0, self.provider.findData(prov.id)))
         self.provider.blockSignals(False)
@@ -2366,7 +2394,7 @@ class CameraPage(QWidget):
 
 
 # The license texts shipped next to the app (and at the top of the repo): (title, file).
-LICENSES = [("Gesture Rotary — MIT License", "LICENSE"), ("Third-party software", "THIRD_PARTY_NOTICES.txt"),
+LICENSES = [("RotaryUI — MIT License", "LICENSE"), ("Third-party software", "THIRD_PARTY_NOTICES.txt"),
             ("Apache License 2.0", "licenses/Apache-2.0.txt"), ("GNU LGPL 3.0", "licenses/LGPL-3.0.txt"),
             ("GNU GPL 3.0", "licenses/GPL-3.0.txt"), ("GNU LGPL 2.1", "licenses/LGPL-2.1.txt"),
             ("Python Software Foundation License", "licenses/Python.txt"),
@@ -2375,7 +2403,7 @@ COPYRIGHT = "Copyright © 2026 MochiBoy9"
 
 
 class LicensesDialog(QDialog):
-    """Gesture Rotary's license, the third-party notices and the full license texts they refer to."""
+    """RotaryUI's license, the third-party notices and the full license texts they refer to."""
 
     def __init__(self, parent=None, start: int = 0):
         super().__init__(parent)
@@ -2412,7 +2440,7 @@ class LicensesDialog(QDialog):
         try:
             self.text.setPlainText((ROOT / LICENSES[row][1]).read_text(encoding="utf-8"))
         except OSError:
-            self.text.setPlainText(f"{LICENSES[row][1]} is missing from this copy of Gesture Rotary.\n"
+            self.text.setPlainText(f"{LICENSES[row][1]} is missing from this copy of RotaryUI.\n"
                                    "See https://github.com/MochiBoy9/Gesture_Rotary")
 
 
@@ -2425,7 +2453,7 @@ class GeneralPage(QWidget):
         v = QVBoxLayout(inner)
         v.setContentsMargins(28, 24, 36, 32)
         v.setSpacing(22)
-        v.addWidget(page_header("General", f"Gesture Rotary {__version__}"))
+        v.addWidget(page_header("General", f"RotaryUI {__version__}"))
         gen = self.app.cfg.get("general", {})
         ap = self.app.cfg.get("appearance", {})
 
@@ -2508,6 +2536,13 @@ class GeneralPage(QWidget):
         c.add(row)
         v.addWidget(c)
 
+        c = Card("Help")
+        b = QPushButton("Take the tour")
+        b.clicked.connect(self.app.start_tutorial)
+        c.add(Row("Tutorial", "Replay the first-run tour: which hand shapes to use, and how to use the rotary "
+                              "without a camera", b))
+        v.addWidget(c)
+
         c = Card("About")
         b = QPushButton("View")
         b.clicked.connect(lambda: LicensesDialog(self, 0).exec())
@@ -2524,7 +2559,7 @@ class GeneralPage(QWidget):
         b2 = QPushButton("Open logs")
         b2.clicked.connect(lambda: open_target(str(DATA_DIR / "logs")))
         c.add(Row("Diagnostics", None, b2))
-        q = QPushButton("Quit Gesture Rotary")
+        q = QPushButton("Quit RotaryUI")
         q.setObjectName("danger")
         q.clicked.connect(self.app.quit)
         c.add(Row("Stop the app and turn the camera off", None, q))
@@ -2532,7 +2567,7 @@ class GeneralPage(QWidget):
             u = QPushButton("Uninstall…")
             u.setObjectName("danger")
             u.clicked.connect(self._uninstall)
-            c.add(Row(f"Remove Gesture Rotary from this {DEVICE}", None, u))
+            c.add(Row(f"Remove RotaryUI from this {DEVICE}", None, u))
         v.addWidget(c)
         v.addStretch(1)
         lay = QVBoxLayout(self)
@@ -2557,8 +2592,8 @@ class GeneralPage(QWidget):
 
     def _uninstall(self) -> None:
         box = QMessageBox(self)
-        box.setWindowTitle("Uninstall Gesture Rotary")
-        box.setText(f"Remove Gesture Rotary from this {DEVICE}?")
+        box.setWindowTitle("Uninstall RotaryUI")
+        box.setText(f"Remove RotaryUI from this {DEVICE}?")
         box.setInformativeText("This removes the app, its shortcuts and its start-at-login entry.")
         keep = QCheckBox("Also delete my settings")
         box.setCheckBox(keep)
@@ -2579,7 +2614,7 @@ class WelcomePage(QWidget):
         v = QVBoxLayout(inner)
         v.setContentsMargins(36, 30, 40, 32)
         v.setSpacing(20)
-        v.addWidget(page_header("Welcome to Gesture Rotary",
+        v.addWidget(page_header("Welcome to RotaryUI",
                                 "Open apps and run actions by moving your hand in front of your camera. "
                                 "A few quick steps and you're set."))
 
@@ -2649,7 +2684,7 @@ class WelcomePage(QWidget):
         c.add(tw)
         v.addWidget(c)
 
-        done = QPushButton("Done — start using Gesture Rotary")
+        done = QPushButton("Done — start using RotaryUI")
         done.setObjectName("accent")
         done.setMinimumHeight(40)
         done.clicked.connect(self._done)
@@ -2677,6 +2712,8 @@ class WelcomePage(QWidget):
         self.app.cfg.setdefault("general", {})["onboarded"] = True
         self.app.apply_config()
         self.win.finish_welcome()
+        if not self.app.cfg["general"].get("tutorial_done", False):
+            self.app.start_tutorial()           # then a one-minute tour of how to use it
 
 
 # =========================================================================== home
@@ -2782,7 +2819,7 @@ class HomePage(QWidget):
         hl.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
         col = QVBoxLayout()
         col.setSpacing(4)
-        title = QLabel("Gesture Rotary")
+        title = QLabel("RotaryUI")
         title.setObjectName("hero")
         col.addWidget(title)
         self.state = QLabel("")
@@ -2816,6 +2853,9 @@ class HomePage(QWidget):
         self.pill = Switch(bool(ap.get("status_pill", True)))
         self.pill.toggled.connect(lambda on: self._ap("status_pill", on))
         c.add(Row("Status messages", "Short notes at the top of the screen", self.pill))
+        tour = QPushButton("Take the tour")
+        tour.clicked.connect(self.app.start_tutorial)
+        c.add(Row("Tutorial", "A one-minute tour of the hand shapes, the notch and the mouse", tour))
         v.addWidget(c)
 
         t = QLabel("ALL SETTINGS")
@@ -2890,7 +2930,7 @@ class HomePage(QWidget):
 
 # =========================================================================== window
 class MainWindow(QWidget):
-    """The Gesture Rotary window: a floating glass sidebar (search, sections, status) beside the current
+    """The RotaryUI window: a floating glass sidebar (search, sections, status) beside the current
     page, all over a soft, blurred copy of your wallpaper."""
     # (key, label, glyph, tile colour, sidebar group)
     PAGES = [("welcome", "Welcome", "E734", "#FF9F0A", ""), ("home", "Home", "E80F", "#0A84FF", ""),
@@ -2904,7 +2944,7 @@ class MainWindow(QWidget):
         super().__init__(None)
         self.app = app
         self.setObjectName("window")
-        self.setWindowTitle("Gesture Rotary")
+        self.setWindowTitle("RotaryUI")
         widgets.UI_SCALE = float(app.cfg.get("appearance", {}).get("text_scale", 1.0))
         self.setStyleSheet(stylesheet())
         self.resize(1180, 800)
@@ -2931,7 +2971,7 @@ class MainWindow(QWidget):
         logo.setPixmap(app.app_icon.pixmap(QSize(28, 28)))
         logo.setFixedSize(28, 28)
         bh.addWidget(logo)
-        brand = QLabel("Gesture Rotary")
+        brand = QLabel("RotaryUI")
         brand.setObjectName("brand")
         bh.addWidget(brand, 1)
         sv.addLayout(bh)

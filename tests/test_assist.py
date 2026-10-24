@@ -34,7 +34,7 @@ def test_openai_style_request_for_groq_openrouter_and_chatgpt():
     p = assist.BY_ID["openrouter"]
     url, headers, body = assist.build_request(p, p.model, p.url, "sk-or", JPEG)
     assert url == "https://openrouter.ai/api/v1/chat/completions"
-    assert headers["Authorization"] == "Bearer sk-or" and headers["X-Title"] == "Gesture Rotary"
+    assert headers["Authorization"] == "Bearer sk-or" and headers["X-Title"] == "RotaryUI"
     assert p.model.endswith(":free")
     user = body["messages"][1]["content"]
     img = next(c for c in user if c["type"] == "image_url")["image_url"]["url"]
@@ -113,10 +113,27 @@ def test_parse_copes_with_fences_and_chatter():
     assert a.found and a.choice == "" and a.headline() == "x = 4"
 
 
+def test_parse_only_a_long_answer():
+    a = assist.parse_reply(json.dumps({"found": True, "answer": "", "detail": "It's 42. Six times seven."}))
+    assert a.found and a.answer == "It's 42." and a.detail == "It's 42. Six times seven."
+
+
+def test_the_prompt_always_attempts_an_answer_with_context_clues():
+    assert "Always attempt an answer" in assist.SYSTEM and "Steam" in assist.SYSTEM
+    assert assist.ask_text() == assist.ASK
+    ask = assist.ask_text("steam", "ELDEN RING on Steam")
+    assert ask.startswith(assist.ASK) and "steam" in ask and '"ELDEN RING on Steam"' in ask
+    p = assist.BY_ID["gemini"]
+    _url, _headers, body = assist.build_request(p, p.model, p.url, "k", JPEG, ask=ask)
+    assert body["contents"][0]["parts"][1]["text"] == ask
+
+
 def test_parse_nothing_found_and_plain_text():
     assert not assist.parse_reply('{"found": false, "choice": "", "answer": "", "detail": ""}').found
     assert not assist.parse_reply('{"found": "false"}').found
     assert not assist.parse_reply('{"found": true, "choice": "", "answer": ""}').found   # nothing to show
+    summary = assist.parse_reply('{"found": false, "answer": "Elden Ring, $59.99", "detail": "An action RPG."}')
+    assert not summary.found and summary.answer == "Elden Ring, $59.99"     # no question: still an answer
     a = assist.parse_reply("The answer is 42.\nBecause six times seven.")
     assert a.found and a.answer == "The answer is 42." and a.detail == "Because six times seven."
     with pytest.raises(assist.AssistError):
@@ -125,7 +142,8 @@ def test_parse_nothing_found_and_plain_text():
 
 def test_long_answers_are_cut_for_the_notch():
     a = assist.parse_reply(json.dumps({"found": True, "answer": "word " * 60, "detail": "more " * 100}))
-    assert len(a.answer) <= 80 and a.answer.endswith("…") and len(a.detail) <= 240
+    assert len(a.answer) <= assist.SHORT_MAX and a.answer.endswith("…") and len(a.detail) <= assist.DETAIL_MAX
+    assert len(a.detail) > 400                       # the hover card's answer is the longer, detailed one
 
 
 # ------------------------------------------------------------------ settings
@@ -215,6 +233,18 @@ def test_solve_with_ollama():
     finally:
         srv.close()
     assert a.answer == "12" and srv.seen["path"] == "/api/chat" and srv.seen["body"]["model"] == "gemma3"
+
+
+def test_solve_sends_the_window_title_as_a_clue():
+    srv = _Server(200, {"message": {"content": '{"found": false, "answer": "Elden Ring, $59.99", '
+                                               '"detail": "Elden Ring is an open-world action RPG."}'}})
+    try:
+        a = assist.solve(JPEG, {"assist": {"provider": "ollama", "urls": {"ollama": srv.url}}},
+                         app="steam", title="ELDEN RING on Steam")
+    finally:
+        srv.close()
+    assert '"ELDEN RING on Steam"' in srv.seen["body"]["messages"][1]["content"]
+    assert a.answer == "Elden Ring, $59.99" and a.detail.startswith("Elden Ring is")
 
 
 @pytest.mark.parametrize("status,body,match", [
@@ -392,6 +422,9 @@ class _Press:
     def position(self):
         return self.pt
 
+    def globalPosition(self):
+        return self.pt
+
 
 def test_notch_shows_the_answer_then_its_card_on_hover():
     n = NotchWindow()
@@ -410,10 +443,11 @@ def test_notch_shows_the_answer_then_its_card_on_hover():
     _paint(n)
     assert {"answer_copy", "answer_close"} <= set(n._buttons)
     n.mousePressEvent(_Press(n._buttons["answer_copy"].center()))
-    assert QApplication.clipboard().text() == "Paris"
+    assert QApplication.clipboard().text() == "Paris has been the capital of France since 987."   # the long one
     opened = []
     n.clicked.connect(lambda: opened.append(1))
     n.mousePressEvent(_Press(QPointF(n.body_rect().center().x(), 20)))   # a click puts it away, no rotary
+    n.mouseReleaseEvent(_Press(QPointF(n.body_rect().center().x(), 20)))
     assert n.answer is None and opened == []
 
 

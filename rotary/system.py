@@ -19,8 +19,9 @@ log = logging.getLogger(__name__)
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_NAME = "GestureRotary"
-LNK_NAME = "Gesture Rotary.lnk"
-LINUX_ID = "gesture-rotary"
+LNK_NAME = "RotaryUI.lnk"
+OLD_LNK_NAME = "Gesture Rotary.lnk"   # the shortcuts' name before RotaryUI: replaced by the new name
+LINUX_ID = "gesture-rotary"           # (like the install folders and RUN_NAME, kept from before RotaryUI)
 
 
 def launcher_command() -> str:
@@ -76,24 +77,24 @@ def _login_item_stale() -> bool:
 
 
 # --------------------------------------------------------------------------- Windows shortcuts
-def start_menu_lnk() -> Path:
-    return Path(os.environ.get("APPDATA", "")) / r"Microsoft\Windows\Start Menu\Programs" / LNK_NAME
+def start_menu_lnk(name: str = LNK_NAME) -> Path:
+    return Path(os.environ.get("APPDATA", "")) / r"Microsoft\Windows\Start Menu\Programs" / name
 
 
-def desktop_lnk() -> Path:
+def desktop_lnk(name: str = LNK_NAME) -> Path:
     try:
         out = subprocess.run(["powershell", "-NoProfile", "-Command", "[Environment]::GetFolderPath('Desktop')"],
                              capture_output=True, text=True, timeout=10, creationflags=_NO_WINDOW).stdout.strip()
     except Exception:
         out = ""
-    return Path(out or Path.home() / "Desktop") / LNK_NAME
+    return Path(out or Path.home() / "Desktop") / name
 
 
 def make_shortcut(lnk: Path, exe: str) -> None:
     q = lambda s: str(s).replace("'", "''")  # noqa: E731
     ps = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{q(lnk)}');$s.TargetPath='{q(exe)}';"
           f"$s.WorkingDirectory='{q(Path(exe).parent)}';$s.IconLocation='{q(exe)},0';"
-          f"$s.Description='Gesture Rotary';$s.Save()")
+          f"$s.Description='RotaryUI';$s.Save()")
     subprocess.run(["powershell", "-NoProfile", "-Command", ps], timeout=15, creationflags=_NO_WINDOW,
                    capture_output=True)
 
@@ -131,8 +132,12 @@ def refresh_install(cfg: dict) -> bool:
     exe = sys.executable
     gen = cfg.setdefault("general", {})
     moved = gen.get("exe_path") not in (None, exe)
+    changed = False
     try:
         if WIN:
+            if not gen.get("shortcuts_renamed"):             # once, after updating from before RotaryUI
+                _rename_old_shortcuts(exe)
+                gen["shortcuts_renamed"] = changed = True
             lnk = start_menu_lnk()
             if moved or not lnk.exists():
                 make_shortcut(lnk, exe)
@@ -141,7 +146,7 @@ def refresh_install(cfg: dict) -> bool:
                 d = desktop_lnk()
                 if d.exists():
                     make_shortcut(d, exe)
-        elif LINUX and (moved or not linux_menu_entry().exists()):
+        elif LINUX and (moved or not linux_menu_entry().exists() or _old_menu_name()):
             make_linux_menu_entry(exe)
             log.info("apps menu entry %s", "updated" if moved else "added")
         if run_at_login() and _login_item_stale():
@@ -151,7 +156,24 @@ def refresh_install(cfg: dict) -> bool:
     if gen.get("exe_path") != exe:
         gen["exe_path"] = exe
         return True
-    return False
+    return changed
+
+
+def _rename_old_shortcuts(exe: str) -> None:
+    """Windows: Start menu / Desktop shortcuts still called "Gesture Rotary" become "RotaryUI"."""
+    desk = desktop_lnk(OLD_LNK_NAME)
+    for old, new in ((start_menu_lnk(OLD_LNK_NAME), start_menu_lnk()), (desk, desk.with_name(LNK_NAME))):
+        if old.exists():
+            make_shortcut(new, exe)
+            old.unlink(missing_ok=True)
+
+
+def _old_menu_name() -> bool:
+    """Linux: the apps-menu entry still says "Gesture Rotary"."""
+    try:
+        return "Name=Gesture Rotary" in linux_menu_entry().read_text(encoding="utf-8")
+    except OSError:
+        return False
 
 
 def install_folder() -> Path | None:
@@ -162,7 +184,7 @@ def install_folder() -> Path | None:
     exe = Path(sys.executable)
     if MAC:
         bundle = exe.parents[2] if len(exe.parents) > 2 else exe.parent
-        if bundle.suffix == ".app" and bundle.name.startswith("Gesture Rotary") \
+        if bundle.suffix == ".app" and bundle.name.startswith(("RotaryUI", "Gesture Rotary")) \
                 and (bundle / "Contents" / "Info.plist").is_file():
             return bundle
         return None
@@ -184,12 +206,13 @@ def uninstall(delete_settings: bool) -> None:
     except OSError:
         pass
     if WIN:
-        links = [start_menu_lnk(), desktop_lnk()]
+        links = [start_menu_lnk(), desktop_lnk(), start_menu_lnk(OLD_LNK_NAME), desktop_lnk(OLD_LNK_NAME)]
     elif LINUX:
         links = [linux_menu_entry(), linux_icon()]
-        launcher = Path.home() / ".local" / "bin" / LINUX_ID
-        if launcher.is_symlink():
-            links.append(launcher)
+        for name in (LINUX_ID, "rotaryui"):                 # install.sh puts both on the PATH
+            launcher = Path.home() / ".local" / "bin" / name
+            if launcher.is_symlink():
+                links.append(launcher)
     else:
         links = []
     for lnk in links:

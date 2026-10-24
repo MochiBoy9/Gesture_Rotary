@@ -1,21 +1,22 @@
-"""Gesture Rotary — a rotary launcher you turn with your hand, the mouse or the keyboard."""
+"""RotaryUI — a rotary launcher you turn with your hand, the mouse or the keyboard."""
 import os
 import sys
 import time
 from pathlib import Path
 
 T0 = time.perf_counter()          # for the "ready in … ms" line in the log
-__version__ = "1.10.0"
+__version__ = "2.0.0"
 
 WIN = sys.platform == "win32"
 MAC = sys.platform == "darwin"
 LINUX = sys.platform.startswith("linux")
 OS_NAME = "Windows" if WIN else "macOS" if MAC else "Linux"
-DEVICE = "PC" if WIN else "Mac" if MAC else "computer"      # "Remove Gesture Rotary from this PC"
+DEVICE = "PC" if WIN else "Mac" if MAC else "computer"      # "Remove RotaryUI from this PC"
 
 
 def _user_data_dir() -> Path:
-    """Where settings live for the packaged app: %APPDATA%, ~/Library/Application Support or ~/.config."""
+    """Where settings live for the packaged app: %APPDATA%, ~/Library/Application Support or ~/.config.
+    The folder keeps the name it had before the app was called RotaryUI, so settings carry over."""
     if WIN:
         return Path(os.environ.get("APPDATA", Path.home())) / "GestureRotary"
     if MAC:

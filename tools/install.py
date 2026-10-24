@@ -35,9 +35,9 @@ shutil.copytree(src, dest)
 
 desktop = subprocess.run(["powershell", "-NoProfile", "-Command", "[Environment]::GetFolderPath('Desktop')"],
                          capture_output=True, text=True).stdout.strip() or str(Path.home() / "Desktop")
-lnk = Path(desktop) / "Gesture Rotary.lnk"
+lnk = Path(desktop) / "RotaryUI.lnk"
 ps = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{lnk}');$s.TargetPath='{exe}';"
-      f"$s.WorkingDirectory='{dest}';$s.IconLocation='{exe},0';$s.Description='Gesture Rotary';$s.Save()")
+      f"$s.WorkingDirectory='{dest}';$s.IconLocation='{exe},0';$s.Description='RotaryUI';$s.Save()")
 subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True)
 print(f"installed: {exe}")
 print(f"shortcut:  {lnk}")

@@ -6,8 +6,10 @@ Anthropic API key, ChatGPT with an OpenAI API key (or any other OpenAI-compatibl
 models on a billed Google key. list_models() asks the service which models that key can use, so the settings can
 offer them. The screenshot goes only to the service you chose, and only when you ask.
 
-The answer comes back as JSON: whether there's a question at all, the option to pick for multiple choice
-("B"), a short answer for the notch and a sentence of explanation for its hover card.
+The AI always attempts an answer: with no question on screen it goes by context clues (a search, selected text,
+the window title) or sums up the page. The answer comes back as JSON: whether there was a question, the option
+to pick for multiple choice ("B"), a short answer for the notch and a longer, detailed one for its hover card
+(which is also what Copy copies).
 """
 from __future__ import annotations
 
@@ -74,24 +76,48 @@ ANTHROPIC_VERSION = "2026-10-21"
 ANTHROPIC_FALLBACK = ("claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5")
 MAX_SIDE = 1600          # screenshots are scaled down to this: plenty to read text, quick to upload
 
-SYSTEM = """You look at a screenshot of someone's computer screen and help with the question or problem on it \
-right now: a quiz or homework question, a multiple-choice question, a maths or logic problem, a puzzle, an error \
-message, a bug in code, a form that needs filling in.
+SYSTEM = """You look at a screenshot of someone's computer screen and help with what's on it right now: a quiz or \
+homework question, a multiple-choice question, a maths or logic problem, a puzzle, an error message, a bug in \
+code, a form that needs filling in, something they searched for, or simply the page they're reading.
 
 Reply with one JSON object and nothing else:
 {"found": true, "choice": "", "answer": "", "detail": ""}
 
-- found: false when nothing on the screen asks a question or shows a problem to solve.
+- found: true when the screen asks a question or shows a problem to solve; false when you're answering from \
+context clues or summing up the screen instead. Either way, still fill in answer and detail.
 - choice: for multiple choice, the label of the correct option exactly as it appears ("B", "3", "iv"); \
 several labels separated by commas when more than one is correct. Otherwise "".
-- answer: the answer itself, as short as possible (60 characters at most): "x = 4", "Paris", \
-"Add a closing bracket on line 12". For multiple choice, the text of the chosen option.
-- detail: one or two short sentences explaining why, or the next step (200 characters at most).
+- answer: the short answer for a small notch, as short as possible (60 characters at most): "x = 4", "Paris", \
+"Add a closing bracket on line 12", "Open-world action RPG, 92% positive". For multiple choice, the text of \
+the chosen option.
+- detail: the longer, more detailed answer people read when they hover the notch and copy to paste elsewhere: \
+3 to 6 sentences (700 characters at most), plain text, no markdown. It must make sense on its own, so restate \
+the answer (and the option) first, then explain why, show the key steps of the working, or give the next steps \
+and useful facts.
+
+Always attempt an answer; never reply that there's nothing to answer. When nothing on the screen asks a \
+question outright, use the context clues: what's typed into a search box or the address bar (a Google search \
+is a question: answer it), selected or highlighted text, an error or dialog, the page's heading, the app and \
+window title. When there's no question at all, sum up what's on screen and what's useful to know about it: on \
+a Steam store page, what the game is, its price and its reviews; on an article, its main points; in code, what \
+it does and anything wrong with it.
 
 If there are several questions, answer the one that is selected, highlighted or most prominent. Work the problem \
 out carefully before you answer."""
 
-ASK = "What is the question or problem on this screen, and what's the answer?"
+ASK = "What is the question or problem on this screen (or, if there's none, what's on it), and what's the answer?"
+SHORT_MAX = 80           # characters: the notch's one-line answer
+DETAIL_MAX = 800         # characters: the hover card's longer answer, and what Copy copies
+
+
+def ask_text(app: str = "", title: str = "") -> str:
+    """The question sent with the screenshot, with the app in front and its window title as context clues."""
+    clues = []
+    if app:
+        clues.append(f"the app in front is {_short(app, 60)}")
+    if title:
+        clues.append(f'its window title is "{_short(title, 200)}"')
+    return f"{ASK} ({'; '.join(clues)}.)" if clues else ASK
 
 
 class AssistError(Exception):
@@ -168,22 +194,22 @@ def ready(cfg: dict | None) -> str:
 
 # --------------------------------------------------------------------------- the request
 def build_request(p: Provider, model: str, base: str, key: str, image: bytes,
-                  mime: str = "image/jpeg") -> tuple[str, dict, dict]:
+                  mime: str = "image/jpeg", ask: str = ASK) -> tuple[str, dict, dict]:
     """(url, headers, JSON body) for one screenshot. No network here, so it can be tested."""
     b64 = base64.b64encode(image).decode("ascii")
-    headers = {"Content-Type": "application/json", "User-Agent": "GestureRotary"}
+    headers = {"Content-Type": "application/json", "User-Agent": "RotaryUI"}
     if p.style == "gemini":
         if key:
             headers["x-goog-api-key"] = key
         body = {"systemInstruction": {"parts": [{"text": SYSTEM}]},
                 "contents": [{"role": "user", "parts": [{"inline_data": {"mime_type": mime, "data": b64}},
-                                                        {"text": ASK}]}],
+                                                        {"text": ask}]}],
                 "generationConfig": {"responseMimeType": "application/json"}}
         return f"{base}/models/{model}:generateContent", headers, body
     if p.style == "ollama":
         body = {"model": model, "stream": False, "format": "json",
                 "messages": [{"role": "system", "content": SYSTEM},
-                             {"role": "user", "content": ASK, "images": [b64]}]}
+                             {"role": "user", "content": ask, "images": [b64]}]}
         return f"{base}/api/chat", headers, body
     if p.style == "anthropic":
         if key:
@@ -192,7 +218,7 @@ def build_request(p: Provider, model: str, base: str, key: str, image: bytes,
         body = {"model": model, "max_tokens": 16000, "system": SYSTEM,
                 "messages": [{"role": "user", "content": [
                     {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}},
-                    {"type": "text", "text": ASK}]}]}
+                    {"type": "text", "text": ask}]}]}
         if model.startswith(ANTHROPIC_FALLBACK):
             headers["anthropic-beta"] = "server-side-fallback-2026-07-01"
             body["fallbacks"] = "default"
@@ -201,13 +227,13 @@ def build_request(p: Provider, model: str, base: str, key: str, image: bytes,
         headers["Authorization"] = f"Bearer {key}"
     if "openrouter.ai" in base:
         headers["HTTP-Referer"] = "https://github.com/MochiBoy9/Gesture_Rotary"
-        headers["X-Title"] = "Gesture Rotary"
+        headers["X-Title"] = "RotaryUI"
     # No response_format: not every OpenAI-compatible server accepts it alongside an image. The prompt asks
     # for JSON and parse_reply() copes with a little extra around it.
     body = {"model": model,
             "messages": [{"role": "system", "content": SYSTEM},
                          {"role": "user", "content": [
-                             {"type": "text", "text": ASK},
+                             {"type": "text", "text": ask},
                              {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}]}]}
     return f"{base}/chat/completions", headers, body
 
@@ -267,14 +293,17 @@ def parse_reply(text: str) -> Answer:
             data = None
     if not isinstance(data, dict):
         lines = [ln.strip() for ln in text.strip("`").splitlines() if ln.strip()]
-        return Answer(True, "", _short(lines[0] if lines else text, 80), _short(" ".join(lines[1:]), 240))
+        return Answer(True, "", _short(lines[0] if lines else text, SHORT_MAX),
+                      _short(" ".join(lines[1:]), DETAIL_MAX))
     found = data.get("found", True)
     if isinstance(found, str):
         found = found.strip().lower() not in ("false", "no", "0", "")
-    ans = Answer(bool(found), _clean_choice(data.get("choice") or ""), _short(data.get("answer"), 80),
-                 _short(data.get("detail"), 240))
-    if ans.found and not (ans.choice or ans.answer):
-        ans.found = False
+    ans = Answer(bool(found), _clean_choice(data.get("choice") or ""), _short(data.get("answer"), SHORT_MAX),
+                 _short(data.get("detail"), DETAIL_MAX))
+    if not ans.answer and ans.detail:              # only the long answer: its first sentence goes on the notch
+        ans.answer = _short(re.split(r"(?<=[.!?])\s", ans.detail, maxsplit=1)[0], SHORT_MAX)
+    if not (ans.choice or ans.answer):
+        ans.found = False                          # nothing to show at all
     return ans
 
 
@@ -374,18 +403,21 @@ def _int(v) -> int:
         return 0
 
 
-def solve(image: bytes, cfg: dict | None, mime: str = "image/jpeg") -> Answer:
-    """Send one screenshot and return the answer (blocking; run it off the UI thread)."""
+def solve(image: bytes, cfg: dict | None, mime: str = "image/jpeg", app: str = "", title: str = "") -> Answer:
+    """Send one screenshot and return the answer (blocking; run it off the UI thread). `app` and `title`, the app
+    in front and its window title, go along as context clues."""
     missing = ready(cfg)
     if missing:
         raise AssistError(missing)
     p = provider(cfg)
     model = model_for(cfg, p)
-    url, headers, body = build_request(p, model, url_for(cfg, p), key_for(cfg, p), image, mime)
+    url, headers, body = build_request(p, model, url_for(cfg, p), key_for(cfg, p), image, mime,
+                                       ask_text(app, title))
     log.info("screen assist: asking %s (%s), %d KB", p.name, model, len(image) // 1024)
     text = reply_text(p.style, post(url, headers, body, p, model))
     ans = parse_reply(text)
-    log.info("screen assist: found=%s choice=%r answer=%r", ans.found, ans.choice, ans.answer)
+    log.info("screen assist: found=%s choice=%r answer=%r (%d more characters)", ans.found, ans.choice, ans.answer,
+             len(ans.detail))
     return ans
 
 
@@ -401,7 +433,7 @@ def list_models(cfg: dict | None, p: Provider | None = None, timeout: float = 20
     Blocking: run it off the UI thread."""
     p = p or provider(cfg)
     base, key = url_for(cfg, p), key_for(cfg, p)
-    headers = {"User-Agent": "GestureRotary"}
+    headers = {"User-Agent": "RotaryUI"}
     out: list[tuple[str, str]] = []
     if p.style == "anthropic":
         if key:

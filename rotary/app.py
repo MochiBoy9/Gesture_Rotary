@@ -21,22 +21,26 @@ from PySide6.QtGui import (QAction, QActionGroup, QBrush, QColor, QConicalGradie
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
-from . import DATA_DIR, LINUX, MAC, T0, WIN, __version__, assist, integrations, modes, system, update, winapi
+from . import (DATA_DIR, LINUX, MAC, T0, WIN, __version__, assist, integrations, modes, system, tutorial, update,
+               winapi)
 from .actions import (CONFIG_PATH, Item, back_item, build_items, cleanup_scripts, execute, item_from, load_config,
                       save_config)
 from .feedback import Sounds, Speaker
 from .live import LiveWatcher
 from .mouse import MouseTrigger
+from .resize import TwoHandResize, WindowSizer
 from .volume import Volume
 from .weather import WeatherWatcher
 from .gestures import GestureEngine, GestureSettings, HandednessTracker, HandFeatures, Phase, extract_features
 from .tracker import CameraStatus, TrackerThread, TrackResult
-from .ui.dial import DialWindow
+from .ui.dial import CORNERS, DialWindow, VolumeRing
 from .ui.glass import TEXT, family, font, load_fonts, set_text_font
 from .ui.notch import NotchWindow
 from .ui.pill import AMBER, BLUE, GRAY, GREEN, RED, PillWindow
 
 log = logging.getLogger(__name__)
+# These, the data folder and the installed files keep the names from before RotaryUI: they're what existing
+# installs, their taskbar pins and their updates go by.
 INSTANCE_KEY = "GestureRotary.single-instance"
 APP_ID = "GestureRotary.App"
 
@@ -78,6 +82,10 @@ HK_TOGGLE = 1
 HK_ASSIST = 2
 ASSIST_HOTKEYS = {"win+alt+a": (MOD_WIN | MOD_ALT, 0x41), "ctrl+alt+a": (MOD_CONTROL | MOD_ALT, 0x41),
                   "ctrl+shift+a": (MOD_CONTROL | MOD_SHIFT, 0x41)}
+ASSIST_LABELS = {"win+alt+a": "Win + Alt + A" if WIN else "Super + Alt + A", "ctrl+alt+a": "Ctrl + Alt + A",
+                 "ctrl+shift+a": "Ctrl + Shift + A"}
+if MAC:
+    ASSIST_LABELS = {"ctrl+alt+a": "⌃⌥A", "win+alt+a": "⌥⌘A", "ctrl+shift+a": "⌃⇧A"}
 NAV = {11: (0x25, -1), 12: (0x27, 1), 13: (0x26, -1), 14: (0x28, 1), 15: (0x0D, 0), 16: (0x1B, 0)}  # ← → ↑ ↓ ⏎ Esc
 # While the rotary is open from the mouse or the keyboard: + and − (and the keypad's) turn it into the volume ring
 # and then turn that ring.
@@ -282,6 +290,30 @@ def face_contact(f: HandFeatures, faces: list, aspect: float, was: bool = False)
     return False, depth
 
 
+FACE_SETTLE = 0.3         # seconds a hand has to stay against the face before it counts as touching it
+
+
+class FaceTouch:
+    """Touching the face, for the hand we follow, only once it has lasted a moment. A hand moving out from in
+    front of the face (or past the chin) can look like it's touching it for a frame or two; that mustn't spoil
+    a palm being held up or a fist closing."""
+
+    def __init__(self):
+        self.on = False
+        self._since: float | None = None
+
+    def update(self, f: HandFeatures, faces: list, aspect: float, same: bool, t: float) -> tuple[bool, float]:
+        if not same:
+            self.on, self._since = False, None
+        touching, depth = face_contact(f, faces, aspect, self.on)
+        if not touching:
+            self.on, self._since = False, None
+        elif not self.on:
+            self._since = t if self._since is None else self._since
+            self.on = t - self._since >= FACE_SETTLE
+        return self.on, depth
+
+
 def hand_at_face(f: HandFeatures, faces: list, aspect: float, was: bool = False) -> bool:
     """Is the hand touching the face: propping up the chin, resting on a cheek, scratching?
     A hand raised beside the head, or held up in front of the face, is *not* at the face."""
@@ -314,6 +346,7 @@ class RotaryApp(QObject):
     mode_data = Signal(int, str, object)   # slides / video ring: (token, what, data) from a background thread
     volume_level = Signal(float)           # the volume slider set this level (-1: unknown)
     volume_read = Signal(float)            # the level when the rotary opened from the mouse / keyboard
+    resize_window = Signal(object)         # two-hand resize began on this ActiveWindow (None: nothing to resize)
 
     def __init__(self, app: QApplication, show_window: bool | None = None):
         super().__init__()
@@ -339,6 +372,8 @@ class RotaryApp(QObject):
         self.speaker = Speaker()
         self.dial = DialWindow(self.items, int(ap.get("dial_size", 540)), bool(ap.get("live_glass", False)))
         self.dial.mouse.connect(self._on_dial_mouse)
+        self.volume_ring = VolumeRing(VOLUME_TICKS, VOLUME_TINT, int(ap.get("dial_size", 540)),
+                                      bool(ap.get("live_glass", False)))
         self.pill_enabled = bool(ap.get("status_pill", True))
         self.pill = PillWindow()
         self.notch = NotchWindow()
@@ -351,6 +386,9 @@ class RotaryApp(QObject):
         self._assist_until = 0.0           # keeps the notch up for a screen-assist message
         self.live = LiveWatcher(self)
         self.live.state.connect(self.notch.set_live)
+        self.live.state.connect(self._on_live_state)
+        self._ringing: tuple[str, str] | None = None     # a call ringing in: the notch shows it, camera or not
+        self.notch.moved.connect(self._on_notch_moved)
         self.live.event.connect(self._on_live_event)
         self.notch.media_command.connect(self.live.control)
         self.notch.call_command.connect(self._on_call_command)
@@ -392,9 +430,15 @@ class RotaryApp(QObject):
         self.weather = WeatherWatcher(self)
         self.weather.changed.connect(lambda w: setattr(self.dial.painter_, "weather", self.weather.fresh()))
         self._was_sliding = False
-        self._was_at_face = False
+        self._face_touch = FaceTouch()
+        self.tour = None                   # the first-run tour's card while it's up (ui/tutorial.py)
         self.mouse_trigger = MouseTrigger(self)
         self.mouse_trigger.event.connect(self._on_mouse_trigger)
+        self.mouse_trigger.pointer.connect(self._on_mouse_pointer)
+        self._hook_map = (0.0, 0.0, 1.0)      # the dial window's origin and scale in the mouse hook's coordinates
+        self.resizer = TwoHandResize()
+        self.sizer = WindowSizer(winapi.active_window, winapi.set_window_rect, self.resize_window.emit)
+        self.resize_window.connect(self._on_resize_window)
 
         gen = self.cfg.get("general", {})
         self.camera_on = bool(gen.get("camera", True))
@@ -445,7 +489,7 @@ class RotaryApp(QObject):
             install_changed = True
             if last and update.is_newer(__version__, last):
                 log.info("updated from %s to %s", last, __version__)
-                QTimer.singleShot(1500, lambda: self._flash_msg(f"Updated to Gesture Rotary {__version__}",
+                QTimer.singleShot(1500, lambda: self._flash_msg(f"Updated to RotaryUI {__version__}",
                                                                 "done", GREEN, 4.0))
 
         from .ui.settings import MainWindow
@@ -481,6 +525,8 @@ class RotaryApp(QObject):
             self.show_window()
         else:
             self.window.showMinimized()   # lives on the taskbar
+        if onboarded and not self.cfg.get("general", {}).get("tutorial_done", False):
+            QTimer.singleShot(1500, self.start_tutorial)     # quit half-way through last time: pick it up again
         QTimer.singleShot(2500, self.dial.prewarm)
         QTimer.singleShot(3000, self.media.warm)            # the video ring asks the media controls
         log.info("ready in %.0f ms (camera %s)", (time.perf_counter() - T0) * 1000, "on" if self.camera_on else "off")
@@ -493,12 +539,43 @@ class RotaryApp(QObject):
         self.window.raise_()
         self.window.activateWindow()
 
+    # ------------------------------------------------------------ first-run tour
+    def start_tutorial(self) -> None:
+        """Show the tour (from the start if it's already up). Launching items is only practice meanwhile."""
+        from .ui.tutorial import TutorialWindow
+        if self.tour is not None:
+            self.tour.finished.disconnect()
+            self.tour.end(False)
+            self.tour.deleteLater()
+        gen = self.cfg.get("general", {})
+        hotkey = HOTKEY_LABELS.get(gen.get("hotkey", "ctrl+alt+space"), "")
+        assist_key = ASSIST_LABELS.get((self.cfg.get("assist") or {}).get("hotkey", ""), "")
+        ctx = tutorial.Context.from_config(self.cfg, hotkey, assist_key)
+        ap = self.cfg.get("appearance", {})
+        self.tour = TutorialWindow(tutorial.steps_for(ctx), {"assist": _keycaps(assist_key)},
+                                   reduce_motion=bool(ap.get("reduce_motion", False)))
+        self.tour.finished.connect(self._tutorial_finished)
+        self.tour.start()
+        log.info("tour started (%d cards)", len(self.tour.tour.steps))
+
+    def _tutorial_finished(self, completed: bool) -> None:
+        log.info("tour %s at card %d", "finished" if completed else "skipped", self.tour.tour.index + 1)
+        self.tour.deleteLater()
+        self.tour = None
+        gen = self.cfg.setdefault("general", {})
+        if not gen.get("tutorial_done", False):
+            gen["tutorial_done"] = True
+            self._save_timer.start()
+        if not completed:
+            self._flash_msg("Tour skipped · replay it from Home any time", "dot", BLUE, 3.0)
+
     def _build_tray(self) -> None:
         self.tray = QSystemTrayIcon(tray_icon(True), self)
-        self.tray.setToolTip("Gesture Rotary")
+        self.tray.setToolTip("RotaryUI")
         m = QMenu()
-        m.addAction("Open Gesture Rotary", self.show_window)
+        m.addAction("Open RotaryUI", self.show_window)
         m.addAction("Open rotary now", self.manual_open)
+        m.addAction("Show the tour", self.start_tutorial)
         m.addSeparator()
         self.cam_menu = m.addMenu("Camera")
         self._fill_camera_menu()
@@ -639,6 +716,10 @@ class RotaryApp(QObject):
         self.dial.painter_.set_accessibility(ap.get("text_scale", 1.0), ap.get("high_contrast", False),
                                              ap.get("reduce_motion", False))
         self.dial.painter_.controls = self.settings.to_dict()
+        self.volume_ring.set_dial_size(int(ap.get("dial_size", 540)))
+        self.volume_ring.live_glass = self.dial.live_glass
+        self.volume_ring.painter_.set_accessibility(ap.get("text_scale", 1.0), ap.get("high_contrast", False),
+                                                    ap.get("reduce_motion", False))
         clock = ap.get("dial_clock", "12h")
         self.dial.painter_.clock_mode = clock if clock in ("12h", "24h", "off") else "12h"
         self.weather.configure(clock != "off" and bool(ap.get("dial_weather", True)), str(ap.get("weather_place", "")))
@@ -657,6 +738,7 @@ class RotaryApp(QObject):
         self.notch.set_peek(bool(gen.get("notch_peek", False)))
         island = self.cfg.get("island", {})
         self.notch.set_options(island)
+        self.notch.set_position(island.get("position"))
         self.live.configure(island)
         self.notch.set_hotkey(HOTKEY_LABELS.get(gen.get("hotkey", "ctrl+alt+space"), ""))
         self.mouse_trigger.configure(gen.get("mouse_button", "middle"))
@@ -741,7 +823,7 @@ class RotaryApp(QObject):
             self.keyboard_session = False
             self.dial.painter_.keyboard = False
             self._nav_keys(False)
-            self.mouse_trigger.set_active(False)
+        self.mouse_trigger.set_active(False)
         self.notch.set_active(False)
 
     def _dial_area(self) -> tuple[tuple[float, float, float], tuple[tuple[float, float, float, float], ...]]:
@@ -758,9 +840,37 @@ class RotaryApp(QObject):
             g = d.geometry()
             k = d.devicePixelRatioF() if LINUX else 1.0
             ox, oy = g.x() * k, g.y() * k
+        self._hook_map = (ox, oy, k)
         circle = (ox + d.width() / 2 * k, oy + d.height() / 2 * k, radius * k)
+        if not self.keyboard_session:
+            return circle, ()                  # the volume button is only there for the mouse and keyboard
         z = d.volume_zone()
-        return circle, ((ox + z.left() * k, oy + z.top() * k, ox + z.right() * k, oy + z.bottom() * k),)
+        zones = [(ox + z.left() * k, oy + z.top() * k, ox + z.right() * k, oy + z.bottom() * k)]
+        if self.tour is not None and self.tour.isVisible():
+            zones.append(_window_zone(self.tour))     # the tour's buttons still take clicks
+        return circle, tuple(zones)
+
+    def _arm_mouse(self) -> None:
+        """The mouse works on the rotary wherever it is, however it was opened: the hook catches the wheel and
+        clicks over it before the app underneath does. Opened for the mouse / keyboard, the mouse outside it is
+        caught too (a click there closes it)."""
+        if self.engine.phase != Phase.OPEN or not self.dial.isVisible():
+            return
+        window = self.dial.interactive and not self.mouse_trigger.holds_back
+        self.mouse_trigger.set_active(True, *self._dial_area(), manual=self.keyboard_session, window=window)
+
+    def _on_mouse_pointer(self, kind: str, x: float, y: float) -> None:
+        """A press / drag / release on the rotary, caught by the mouse hook (in its own coordinates)."""
+        if self.engine.phase != Phase.OPEN:
+            return
+        ox, oy, k = self._hook_map
+        pt = QPointF((x - ox) / max(k, 1e-6), (y - oy) / max(k, 1e-6))
+        if kind == "press":
+            self.dial.press_at(pt, src="hook")
+        elif kind == "drag":
+            self.dial.drag_to(pt)
+        elif kind == "release":
+            self.dial.release_at(pt)
 
     def open_manual(self) -> None:
         """Open the rotary for the mouse and keyboard (shortcut, notch, tray, window button)."""
@@ -776,9 +886,6 @@ class RotaryApp(QObject):
         else:
             self.keyboard_session = False
         self._handle(ev)
-        if self.keyboard_session and self.dial.isVisible():
-            # Clicks and scrolls outside the rotary stop here instead of reaching the app underneath.
-            self.mouse_trigger.set_active(True, *self._dial_area())
 
     def _close_manual(self, reason: str) -> None:
         self._handle(self.engine.force_close(time.monotonic(), reason))
@@ -895,19 +1002,45 @@ class RotaryApp(QObject):
             pct = data.get("percent", 0)
             self._alert(f"Battery low · {pct}%", "power", RED if pct <= 10 else AMBER, 5.0)
 
+    # Each app's own shortcuts. Discord has no built-in one for leaving a call: RotaryUI presses
+    # Ctrl+Shift+H, so give Discord's "Disconnect from voice channel" keybind that key (Settings → Keybinds) —
+    # or set another under "island" → "discord_leave_keys" in config.json.
     CALL_KEYS = {("Discord", "mute"): ("discord", "ctrl+shift+m", ""),
                  ("Discord", "deafen"): ("discord", "ctrl+shift+d", ""),
+                 ("Discord", "accept"): ("discord", "ctrl+enter", ""),
+                 ("Discord", "decline"): ("discord", "esc", ""),
+                 ("Discord", "leave"): ("discord", "ctrl+shift+h", ""),
                  ("Teams", "mute"): ("teams", "ctrl+shift+m", ""),
-                 ("Zoom", "mute"): ("zoom", "alt+a", "Meeting")}
+                 ("Teams", "accept"): ("teams", "ctrl+shift+s", ""),
+                 ("Teams", "decline"): ("teams", "ctrl+shift+d", ""),
+                 ("Teams", "leave"): ("teams", "ctrl+shift+h", ""),
+                 ("Zoom", "mute"): ("zoom", "alt+a", "Meeting"),
+                 ("Zoom", "leave"): ("zoom", "alt+q", "Meeting"),
+                 ("Slack", "leave"): ("slack", "ctrl+shift+h", "")}
+    CALL_APP_IDS = {"Discord": "discord", "Teams": "teams", "Zoom": "zoom", "Slack": "slack",
+                    "WhatsApp": "whatsapp", "Telegram": "telegram", "Signal": "signal"}
 
     def _on_call_command(self, app_name: str, what: str) -> None:
-        """Mute / deafen from the notch's call card: the app's own shortcut, sent to its window."""
+        """The notch's call buttons — mute, deafen, leave, and accept / decline a call ringing in: the app's own
+        shortcut, sent to its window. An app without one for answering is brought to the front instead (decline
+        there just puts the notch's card away)."""
         app_id, keys, title = self.CALL_KEYS.get((app_name, what), ("", "", ""))
-        a = integrations.get(app_id) if app_id else None
+        if app_id and (app_name, what) == ("Discord", "leave"):
+            keys = str(self.cfg.get("island", {}).get("discord_leave_keys") or keys)
+        if what in ("accept", "decline", "leave"):
+            log.info("call: %s in %s", what, app_name)
+        if not app_id:
+            a = integrations.get(self.CALL_APP_IDS.get(app_name, "")) if what == "accept" else None
+            if a is not None:
+                action = a.launch()          # no shortcut to answer: bring the app up to answer it there
+                threading.Thread(target=lambda: self._run_quiet(action), daemon=True).start()
+            return
+        a = integrations.get(app_id)
         if a is None:
             return
         action = a.keys(keys, prefer_title=title)
-        label = {"mute": "Mute", "deafen": "Deafen"}.get(what, what)
+        label = {"mute": "Mute", "deafen": "Deafen", "accept": "Answered", "decline": "Declined",
+                 "leave": "Left the call"}.get(what, what)
 
         def work():
             try:
@@ -916,6 +1049,30 @@ class RotaryApp(QObject):
             except Exception as e:
                 self.action_done.emit(f"{app_name} · {label}", False, str(e))
         threading.Thread(target=work, daemon=True).start()
+
+    def _run_quiet(self, action: dict) -> None:
+        try:
+            execute(action, self.cfg)
+        except Exception:
+            log.debug("couldn't run %s", action, exc_info=True)
+
+    def _on_live_state(self, state) -> None:
+        """A call ringing in shows the notch (even with the camera in use) until it's answered or stops."""
+        ring = state.incoming if self.cfg.get("island", {}).get("calls", True) else None
+        if ring != self._ringing:
+            self._ringing = ring
+            self._update_notch()
+
+    def _on_notch_moved(self, pos) -> None:
+        island = self.cfg.setdefault("island", {})
+        if pos is None:
+            if island.pop("position", None) is None:
+                return
+        elif island.get("position") == pos:
+            return
+        else:
+            island["position"] = dict(pos)
+        self._save_timer.start()
 
     def _on_timer_done(self) -> None:
         self.sounds.play("confirm")
@@ -927,7 +1084,7 @@ class RotaryApp(QObject):
         mode = self.cfg.get("general", {}).get("notch", "auto")
         if mode == "off":
             return False
-        if mode == "on" or self._assist_showing():
+        if mode == "on" or self._assist_showing() or self._ringing is not None:
             return True
         # auto: when there's no camera to use (switched off, or none found for a few seconds)
         return self._no_cam_since is not None and time.monotonic() - self._no_cam_since > 4.0
@@ -937,11 +1094,17 @@ class RotaryApp(QObject):
         wanted = self._notch_wanted()
         # Alerts and screen-assist answers may show over a borderless full-screen game, never an exclusive one.
         alert = time.monotonic() < self._alert_until or (self._assist_showing() and self._fs_state != 3)
+        if self._ringing is not None and self._fs_state != 3 and self.cfg.get("island", {}).get("alerts_over_games",
+                                                                                                 True):
+            alert = True
         show = wanted and (alert or not (self._fullscreen and gen.get("notch_hide_fullscreen", True)))
-        # The live activities keep watching while a game hides the notch, so a saved clip can still pop up.
-        if wanted and not self.live.isRunning():
+        # The live activities keep watching while a game hides the notch, so a saved clip can still pop up. With
+        # the notch away (the camera's in use), they still listen for a call ringing in.
+        listen = wanted or (gen.get("notch", "auto") != "off" and self.cfg.get("island", {}).get("calls", True))
+        self.live.calls_only = not wanted
+        if listen and not self.live.isRunning():
             self.live.start()
-        elif not wanted and self.live.isRunning():
+        elif not listen and self.live.isRunning():
             self.live.stop()
         if show != self.notch.isVisible():
             why = ("on" if show else "off") + f" (setting {gen.get('notch', 'auto')!r}, camera "
@@ -996,7 +1159,10 @@ class RotaryApp(QObject):
 
         def work():
             try:
-                self.assist_done.emit(assist.solve(shot, cfg), "")
+                app_name, title = modes.foreground()       # context clues for the AI: "steam", "Elden Ring on Steam"
+                if title.lower().startswith(("rotaryui", "gesture rotary")):
+                    app_name = title = ""                   # our own settings window says nothing about the screen
+                self.assist_done.emit(assist.solve(shot, cfg, app=app_name, title=title), "")
             except assist.AssistError as e:
                 self.assist_done.emit(None, str(e))
             except Exception:
@@ -1010,8 +1176,8 @@ class RotaryApp(QObject):
         if err:
             self._assist_message(err[:110], "error", RED, 6.0)
             return
-        if not ans.found:
-            self._assist_message("No question or problem on screen", "dot", GRAY, 3.5)
+        if not (ans.choice or ans.answer):              # the AI always tries, so this is a blank reply
+            self._assist_message("The AI couldn't make out anything on screen", "dot", GRAY, 3.5)
             return
         seconds = float(assist.settings(self.cfg).get("seconds", 20))
         self._assist_until = time.monotonic() + 1.0
@@ -1071,7 +1237,7 @@ class RotaryApp(QObject):
                 self._flash_msg(err[:110], "error", AMBER, 5.0)
             return
         if release is None:
-            self._set_update_note(f"Gesture Rotary {__version__} is the latest version")
+            self._set_update_note(f"RotaryUI {__version__} is the latest version")
             return
         if staged is None:                               # running from source, or a folder it can't change
             self._set_update_note(f"Version {release.version} is out. {update.unsupported()}.")
@@ -1103,7 +1269,7 @@ class RotaryApp(QObject):
             self._set_update_note(f"Couldn't install version {staged.version} ({e})")
             return
         self._set_update_note(f"Updating to {staged.version}…")
-        self._flash_msg(f"Updating to Gesture Rotary {staged.version}…", "pulse", BLUE, 5.0)
+        self._flash_msg(f"Updating to RotaryUI {staged.version}…", "pulse", BLUE, 5.0)
         QTimer.singleShot(900, self.quit)
 
     # ------------------------------------------------------------ quick nav levels
@@ -1234,9 +1400,16 @@ class RotaryApp(QObject):
         self._mode_sel = self.engine.sel_raw
         self.dial.set_mode("volume", [self._mode_item("Volume", VOLUME_TINT)] * n, self._volume_info(),
                            self.engine.snapshot())
+        self.volume_ring.hide_now()
+        self.dial.place(self._volume_corner())       # the volume ring lives in its corner
+        self._arm_mouse()
+
+    def _volume_corner(self) -> str:
+        corner = (self.cfg.get("modes") or {}).get("volume_corner", "bottom-right")
+        return corner if corner in CORNERS else "bottom-right"
 
     def _volume_info(self) -> dict:
-        return {"sub": "Volume", "top": "Volume"}
+        return {"top": "Volume"}
 
     def _apply_mode_settings(self, **changes) -> None:
         self.engine.s = replace(self.settings, dwell_seconds=0.0, **changes)
@@ -1403,12 +1576,16 @@ class RotaryApp(QObject):
         if self.mode == "main":
             return
         self._flush_seek()
+        was = self.mode
         self.mode = "main"
         self._mode_token += 1
         self.engine.s = self.settings
         self.engine.enter_level(len(self.level_items), time.monotonic(), selected=self._main_sel)
         self.dial.set_mode("main", self.level_items, {}, self.engine.snapshot())
         self.dial.painter_.crumb = self.crumb
+        if was == "volume":
+            self.dial.place("")                      # back to the middle with the items
+            self._arm_mouse()
         if not quiet:
             self.sounds.play("open")
             self._say("Rotary. " + self.level_items[self.engine.selected % len(self.level_items)].name)
@@ -1438,11 +1615,10 @@ class RotaryApp(QObject):
                 self.dial.set_state(self.engine.snapshot())
             return
         self.sounds.play("tick")
-        if self.dial.isVisible():
-            self.dial.painter_.show_volume(level)
+        if level >= 0:
+            self.volume_ring.show_level(level, self._volume_corner())    # its own ring, in its corner
         else:
-            self._flash_msg(f"Volume {level * 100:.0f}%" if level >= 0 else "Volume", "dot", BLUE, 1.6,
-                            progress=level if level >= 0 else None)
+            self._flash_msg("Volume", "dot", BLUE, 1.6)
 
     def _on_volume_read(self, level: float) -> None:
         if self.dial.isVisible() and level >= 0:
@@ -1462,8 +1638,7 @@ class RotaryApp(QObject):
             h = res.hands[idx]
             label, conf = self.hands.update(h.handedness, h.score, feats[idx].grip, res.t)
             f = extract_features(h, flip, handedness=label, handed_conf=conf)
-            f.at_face, f.face_depth = face_contact(f, res.faces, aspect, same and self._was_at_face)
-            self._was_at_face = f.at_face
+            f.at_face, f.face_depth = self._face_touch.update(f, res.faces, aspect, same, res.t)
             feats[idx] = f
             self._prev_center = f.center
             self._last_hand_t = time.monotonic()
@@ -1471,8 +1646,15 @@ class RotaryApp(QObject):
                 self._calib.append(f.raw_facing)
         else:
             self._prev_center = None
-        self._handle(self.engine.update(f, res.t))
+        for i, other in enumerate(feats):
+            if i != idx:
+                other.at_face = hand_at_face(other, res.faces, aspect)
+        self._update_resize(feats, res.t)
+        # Both hands pinching to resize a window: that's not a gesture for the rotary.
+        self._handle(self.engine.update(None if self.resizer.busy else f, res.t))
         snap = self.engine.snapshot()
+        if self.tour is not None:
+            self.tour.feed_snapshot(snap)
         if snap.sliding and not self._was_sliding:
             self.volume.forget()                 # read the level afresh: something else may have changed it
         self._was_sliding = snap.sliding
@@ -1491,9 +1673,33 @@ class RotaryApp(QObject):
             self.window.camera.set_frame(res.preview, res.hands, feats, idx, snap, res.faces)
         self._update_pill(snap)
 
+    def _update_resize(self, feats: list[HandFeatures], now: float) -> None:
+        """Two-hand pinch-and-stretch resizes the window in front, while the rotary is put away."""
+        if (self.settings.window_resize and self.engine.phase == Phase.IDLE and not self.keyboard_session
+                and not self.engine.paused):
+            events = self.resizer.update(feats, now)
+        else:
+            events = self.resizer.cancel()
+        for name, payload in events:
+            log.debug("event %s %s", name, payload)
+            if name == "resize_start":
+                self.sizer.begin()
+            elif name == "resize":
+                self.sizer.scale(*payload)
+            elif name == "resize_end":
+                self.sizer.end()
+
+    def _on_resize_window(self, win) -> None:
+        if win is None:
+            self._flash_msg("Bring a windowed app to the front to resize it", "error", AMBER, 2.5)
+        else:
+            self.sounds.play("tick")
+            self._flash_msg("Resizing " + (win.title[:40] or "window"), "dot", BLUE, 1.5)
+
     def _on_heartbeat(self) -> None:
         now = time.monotonic()
         if now - self._last_result_t > 0.25:
+            self._update_resize([], now)
             self._handle(self.engine.update(None, now))
             snap = self.engine.snapshot()
             if self.dial.isVisible():
@@ -1569,6 +1775,8 @@ class RotaryApp(QObject):
     def _handle(self, events: list) -> None:
         for name, payload in events:
             log.debug("event %s %s", name, payload)
+            if self.tour is not None:
+                self.tour.feed(name)
             if name == "open":
                 self._reset_levels()
                 self._reset_mode()
@@ -1577,7 +1785,9 @@ class RotaryApp(QObject):
                 self.dial.painter_.mode = "main"
                 self.dial.painter_.keyboard = self.keyboard_session
                 self.dial.painter_.weather = self.weather.fresh()
+                self.dial.place("")
                 self.dial.open(self.engine.snapshot(), interactive=self.keyboard_session)
+                self._arm_mouse()
                 if self.keyboard_session:
                     self.volume.read(self.volume_read.emit)      # the slider beside it starts at today's level
                 self.sounds.play("open")
@@ -1605,7 +1815,9 @@ class RotaryApp(QObject):
                 self.dial.play_execute()
                 self.sounds.play("confirm")
                 self._say(item.name)
-                if item.kind == "assist":
+                if self.tour is not None and self.tour.practice:
+                    self._flash_msg(f"Practice · {item.name} would open now", "done", GREEN, 2.5)
+                elif item.kind == "assist":
                     self.start_assist()
                 else:
                     self._run_action(item)
@@ -1740,6 +1952,11 @@ class RotaryApp(QObject):
             self._save_cfg()
 
     def _shutdown(self) -> None:
+        if self.tour is not None:            # quit mid-tour: it picks up again next time (tutorial_done stays false)
+            import shiboken6
+            self.tour.finished.disconnect()
+            shiboken6.delete(self.tour)       # while Qt is still up; Python would free it after the QApplication
+            self.tour = None
         if self.live.isRunning():
             self.live.stop()
             self.live.wait(2000)
@@ -1758,11 +1975,39 @@ class RotaryApp(QObject):
         self.mouse_trigger.stop()
         self._shutdown()
         self.tray.hide()
+        self.volume_ring.hide_now()
+        self.volume_ring.close()
         self.window.close()
         self.app.quit()
 
 
 # --------------------------------------------------------------------------- entry
+def _keycaps(label: str) -> list[str]:
+    """'Win + Alt + A' → ['Win', 'Alt', 'A']; '⌃⌥A' → ['⌃', '⌥', 'A']."""
+    if not label:
+        return []
+    if "+" in label:
+        return [k.strip() for k in label.split("+")]
+    caps = []
+    for ch in label:
+        if ch in "⌃⌥⇧⌘" or not caps or caps[-1] in "⌃⌥⇧⌘":
+            caps.append(ch)
+        else:
+            caps[-1] += ch
+    return caps
+
+
+def _window_zone(w: QWidget) -> tuple[float, float, float, float]:
+    """A window's rectangle in the mouse hook's coordinates (Windows: physical pixels)."""
+    if WIN:
+        r = wintypes.RECT()
+        if winapi.user32.GetWindowRect(wintypes.HWND(int(w.winId())), ctypes.byref(r)):
+            return r.left, r.top, r.right, r.bottom
+    g = w.frameGeometry()
+    k = w.devicePixelRatioF() if LINUX else 1.0
+    return g.left() * k, g.top() * k, (g.right() + 1) * k, (g.bottom() + 1) * k
+
+
 def _instance_key() -> str:
     """One running copy per person: on macOS and Linux the socket sits in the shared /tmp, so another
     account's copy mustn't be mistaken for (or get in the way of) this one."""
@@ -1848,8 +2093,8 @@ def main(argv: list[str] | None = None) -> int:
             pass
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(["gesture-rotary"])
-    app.setApplicationName("Gesture Rotary")
-    app.setApplicationDisplayName("Gesture Rotary")
+    app.setApplicationName("RotaryUI")
+    app.setApplicationDisplayName("RotaryUI")
     app.setQuitOnLastWindowClosed(False)
     server = _single_instance(app)
     if server is None:

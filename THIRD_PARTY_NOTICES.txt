@@ -1,7 +1,7 @@
-GESTURE ROTARY: THIRD-PARTY NOTICES
+ROTARYUI: THIRD-PARTY NOTICES
 ===================================
 
-Gesture Rotary itself is released under the MIT License (see LICENSE). The
+RotaryUI itself is released under the MIT License (see LICENSE). The
 release builds (Setup.exe, portable .zip, .dmg and Linux .tar.gz) also
 contain the software below, which stays under its own license. The full
 license texts are in the licenses/ folder next to this file.
@@ -110,7 +110,7 @@ NumPy
 MIT License
 -----------
 
-The components below use the same MIT terms as Gesture Rotary itself (see
+The components below use the same MIT terms as RotaryUI itself (see
 LICENSE), each under its own copyright notice:
 
   Fluent UI System Icons (drawn into assets/rotary-icons.ttf)

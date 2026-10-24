@@ -1,12 +1,17 @@
-"""Build Gesture Rotary and package it for release, on the system you run it on:
+"""Build RotaryUI and package it for release, on the system you run it on:
 
     uv run python tools/build.py              # → release/
     uv run python tools/build.py --skip-package
 
-  Windows  GestureRotary-<version>-Windows-Setup.exe   (Inno Setup; needs ISCC.exe — winget install JRSoftware.InnoSetup)
-           GestureRotary-<version>-Windows-Portable.zip
-  macOS    GestureRotary-<version>-macOS.dmg            (drag to Applications)
-  Linux    GestureRotary-<version>-Linux-x86_64.tar.gz  (unpack, run ./install.sh)
+  Windows  RotaryUI-<version>-Windows-Setup.exe   (Inno Setup; needs ISCC.exe — winget install JRSoftware.InnoSetup)
+           RotaryUI-<version>-Windows-Portable.zip
+  macOS    RotaryUI-<version>-macOS.dmg            (drag to Applications)
+  Linux    RotaryUI-<version>-Linux-x86_64.tar.gz  (unpack, run ./install.sh)
+
+Inside, the program keeps its file names from before it was called RotaryUI ("Gesture Rotary.exe",
+gesture-rotary): installed copies, and the updater in copies older than 2.0, go by them. The Mac app is
+RotaryUI.app; a second disk image, GestureRotary-<version>-macOS.dmg, has it as "Gesture Rotary.app" for those
+older copies to update from.
 
 PyInstaller's work folders live under %LOCALAPPDATA%\\GestureRotary on Windows (MediaPipe's deep paths break
 Windows' 260-character limit elsewhere) and in build/ + dist/ on macOS and Linux."""
@@ -50,7 +55,7 @@ def pyinstaller() -> Path:
     run([sys.executable, "tools/make_icon.py"], cwd=ROOT)
     run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--distpath", DIST, "--workpath", WORK,
          "Gesture Rotary.spec"], cwd=ROOT)
-    out = DIST / ("Gesture Rotary.app" if MAC else "Gesture Rotary" if WIN else "gesture-rotary")
+    out = DIST / ("RotaryUI.app" if MAC else "Gesture Rotary" if WIN else "gesture-rotary")
     if not out.exists():
         raise SystemExit(f"PyInstaller didn't produce {out}")
     if not MAC:
@@ -78,11 +83,11 @@ def package_windows(app: Path) -> list[Path]:
     iscc = find_iscc()
     if iscc:
         run([iscc, f"/DAppVersion={__version__}", f"/DBuildDir={app}", f"/O{RELEASE}",
-             f"/FGestureRotary-{__version__}-Windows-Setup", ROOT / "installer" / "windows" / "GestureRotary.iss"])
-        out.append(RELEASE / f"GestureRotary-{__version__}-Windows-Setup.exe")
+             f"/FRotaryUI-{__version__}-Windows-Setup", ROOT / "installer" / "windows" / "GestureRotary.iss"])
+        out.append(RELEASE / f"RotaryUI-{__version__}-Windows-Setup.exe")
     else:
         print("! Inno Setup not found — skipping the Setup.exe (winget install JRSoftware.InnoSetup)")
-    z = RELEASE / f"GestureRotary-{__version__}-Windows-Portable.zip"
+    z = RELEASE / f"RotaryUI-{__version__}-Windows-Portable.zip"
     with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for f in sorted(app.rglob("*")):
             if f.is_file():
@@ -102,18 +107,23 @@ def package_mac(app: Path) -> list[Path]:
         run(["codesign", "--force", "--deep", "--sign", "-", app])
     run(["codesign", "--verify", "--deep", "--strict", app])
 
+    # The bundle's folder name isn't part of its signature, so the same app goes in both under either name.
+    return [make_dmg(app, "RotaryUI.app", RELEASE / f"RotaryUI-{__version__}-macOS.dmg", identity),
+            make_dmg(app, "Gesture Rotary.app", RELEASE / f"GestureRotary-{__version__}-macOS.dmg", identity)]
+
+
+def make_dmg(app: Path, name: str, dmg: Path, identity: str | None) -> Path:
     stage = WORK / "dmg"
     shutil.rmtree(stage, ignore_errors=True)
     stage.mkdir(parents=True)
-    run(["ditto", app, stage / app.name])                    # ditto keeps the bundle's symlinks and signatures
+    run(["ditto", app, stage / name])                        # ditto keeps the bundle's symlinks and signatures
     (stage / "Applications").symlink_to("/Applications")
     shutil.copy(ROOT / "installer" / "macos" / "README.txt", stage / "Read me first.txt")
     shutil.copy(ROOT / "LICENSE", stage / "License.txt")
-    dmg = RELEASE / f"GestureRotary-{__version__}-macOS.dmg"
     dmg.unlink(missing_ok=True)
     for attempt in range(3):              # hdiutil sometimes reports "Resource busy" on build machines
         try:
-            run(["hdiutil", "create", "-volname", f"Gesture Rotary {__version__}", "-srcfolder", stage, "-ov",
+            run(["hdiutil", "create", "-volname", f"RotaryUI {__version__}", "-srcfolder", stage, "-ov",
                  "-format", "UDZO", "-fs", "HFS+", dmg])
             break
         except subprocess.CalledProcessError:
@@ -126,12 +136,12 @@ def package_mac(app: Path) -> list[Path]:
             run(["xcrun", "notarytool", "submit", dmg, "--apple-id", os.environ["APPLE_ID"],
                  "--team-id", os.environ["APPLE_TEAM_ID"], "--password", os.environ["APPLE_APP_PASSWORD"], "--wait"])
             run(["xcrun", "stapler", "staple", dmg])
-    return [dmg]
+    return dmg
 
 
 # --------------------------------------------------------------------------- Linux
 def package_linux(app: Path) -> list[Path]:
-    name = f"GestureRotary-{__version__}-Linux-{arch()}"
+    name = f"RotaryUI-{__version__}-Linux-{arch()}"
     tgz = RELEASE / f"{name}.tar.gz"
 
     def add(tf: tarfile.TarFile, src: Path, arc: str, mode: int | None = None) -> None:

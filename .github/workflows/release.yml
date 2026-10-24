@@ -167,10 +167,13 @@ jobs:
           path: release
           pattern: GestureRotary-*
           merge-multiple: true
-      - name: Checksums
+      - name: Copies under the names from before RotaryUI, then checksums
         run: |
           cd release
-          sha256sum GestureRotary-* > SHA256SUMS.txt
+          # Copies older than 2.0 update themselves from GestureRotary-<version>-… (same files, other names).
+          # (The Mac build makes its own: there the app inside is named as before too.)
+          for f in RotaryUI-*; do t="GestureRotary-${f#RotaryUI-}"; [ -e "$t" ] || cp "$f" "$t"; done
+          sha256sum RotaryUI-* GestureRotary-* > SHA256SUMS.txt
           cat SHA256SUMS.txt
       - name: Release notes
         run: |
@@ -183,7 +186,7 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: Gesture Rotary ${{ env.RELEASE_TAG }}
+          name: RotaryUI ${{ env.RELEASE_TAG }}
           body_path: notes.md
           prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
           files: release/*

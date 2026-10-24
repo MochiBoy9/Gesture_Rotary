@@ -1,5 +1,59 @@
 # Changelog
 
+## [2.0.0] — RotaryUI
+
+### Added
+- **Resize windows with both hands.** Pinch with both hands, then pull them apart to make the window in front
+  bigger or push them together to make it smaller. Hands side by side change the width, one above the other the
+  height, and hands at opposite corners change both. It only touches the window in front, and only while it's
+  windowed (not maximised, minimised or full screen); it never goes past the screen or below a usable size.
+  Let go of the pinch to stop, and pinch again to keep going. Turn it off under *Controls → Resize windows*.
+  macOS needs the Accessibility permission; Linux needs `xdotool` (X11 / XWayland apps).
+- **A first-run tour.** After the welcome page, new users get a short tour that floats beside the rotary: how
+  to show your palm, open the rotary with a fist or by holding still, turn it, turn it like a knob, launch with a
+  pinch or a pointed finger, put it away, change the volume with two fingers, what it ignores, and how to use it
+  all without a camera (the notch, the shortcut, the middle mouse button). Each card shows the hand shape, ticks
+  when you do the gesture and moves on. Launching is only practice while it's open. Skip it any time, and replay
+  it from *Home*, *General › Help* or the tray menu. Cards follow your settings: no fist card if a fist doesn't
+  open the rotary, no gesture cards with the camera off. Existing users aren't shown it automatically.
+- **Move the notch.** Drag it along the top edge, or pull it down until it stretches and tears off like a drop of
+  liquid, and put it anywhere. Throw it and it glides, bouncing off the screen's edges; bring it back to the top
+  and it merges in. It stays where you left it. A middle click (the scroll wheel) sends it home to the middle.
+- **Calls ringing in.** When Discord, Teams or another call app rings, the notch opens by itself — even while you
+  use the camera — with who's calling (when the app says) and Accept / Decline. Windows.
+- **Leave a call** from the notch: hover the call for Leave (Teams, Zoom, Slack; Discord once its *Disconnect*
+  keybind is set to Ctrl + Shift + H), or right-click → Leave the call.
+- **The mouse works on the rotary wherever it is.** Whenever the rotary is on screen — opened by a hand, the
+  mouse, the keyboard or the notch — you can scroll over the ring to turn it, press and drag it around like a
+  knob, and click an item or the centre (the app's icon) to launch it. These are caught before the app
+  underneath sees them, so turning and clicking the rotary works the same over a web browser, a game or any
+  other app. (On Linux the ring still turns, but the app underneath may receive the clicks as well.)
+- **A fist keeps turning when you hold it.** Like leaning an open palm, holding your fist turned to one side now
+  keeps the ring stepping on by itself — faster the further you turn — until you bring your hand back, as well
+  as the firm click-per-item knob it already was. How long to hold is in *Controls → Fist keeps turning*.
+- **The volume gets a full-size ring of its own.** Changing the volume with two fingers (or the volume button)
+  now shows a full rotary volume ring in a corner of the screen, with the same turning and degree physics as the
+  slides and video rings, instead of a small bar. Its corner is set in *Controls → Volume ring corner*.
+
+### Changed
+- **Gesture Rotary is now RotaryUI.** The app, its window, menus, shortcuts, installer and downloads carry the
+  new name. Your settings, saved keys and start-at-login carry over, and copies you already have update to 2.0 by
+  themselves. The settings folder and the program's file names on Windows and Linux keep the old name for that;
+  on Linux the app now also runs as `rotaryui`.
+- **Screen assist always attempts an answer.** With no question on screen it goes by context clues (what's typed
+  into a Google search or the address bar, selected text, an error, the app and window title, which are now sent
+  along with the screenshot) and, failing that, sums up the screen: on a Steam store page, what the game is, its
+  price and reviews. *No question or problem on screen* is gone.
+- **Longer, more detailed answers on hover.** The notch still shows the short answer; hovering it now shows a few
+  sentences with the working, the reasoning or the next steps (the card is taller to fit them).
+- **Copy copies the detailed answer** instead of the short one.
+
+### Fixed
+- **Moving your hand away from your face no longer breaks tracking.** A hand moving out from in front of the
+  face (or past the chin) could flicker as "touching the face" for a frame or two, which reset the hold-to-open
+  timer and spoiled a fist being formed. A hand now has to rest against the face for a moment before it counts,
+  and a brief glitch pauses the open-palm hold instead of starting it over.
+
 ## [1.10.0] — Gestures in front of your face
 
 ### Changed
