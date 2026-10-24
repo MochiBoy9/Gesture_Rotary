@@ -792,3 +792,15 @@ def test_held_fist_auto_turn_stops_at_the_end_of_a_slides_ring():
     s.turn(0, 50, seconds=0.3, flex=1.0)
     s.run(3.0, roll_deg=50, flex=1.0)
     assert s.e.sel_raw == 0
+
+
+@pytest.mark.parametrize("fps", [30, 12, 8, 6])
+def test_palm_hold_opens_on_a_slow_camera(fps):
+    """Frames far apart (a slow camera or machine) are not gaps: the hold still takes its 3 s."""
+    e = GestureEngine(8, GestureSettings())
+    t, events = 0.0, []
+    for _ in range(int(4.0 * fps)):
+        t += 1 / fps
+        events += [(t, *ev) for ev in e.update(feats(), t)]
+    assert [ev[1:] for ev in events] == [("open", "still")]
+    assert 2.95 <= events[0][0] <= 3.0 + 2 / fps

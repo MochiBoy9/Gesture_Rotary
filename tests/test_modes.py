@@ -154,6 +154,37 @@ def test_opened_by_hand_only_the_ring_is_ours():
     assert m.take_pointer() == []
 
 
+def test_middle_button_on_a_hand_opened_rotary():
+    """Opened by a hand, the middle button closes it only when pressed on the ring; elsewhere it is still the
+    app's middle click (a link opened in a new tab, say)."""
+    m = MouseLogic("middle")
+    m.set_active(True, (500, 500, 300), manual=False)
+    assert m.feed("down", "middle", 50, 50, now=0.0)          # held back while we find out, as usual
+    assert m.feed("up", "middle", 50, 50, now=0.1)
+    assert m.replay == "middle" and m.take() == []            # a quick click: sent on to the app
+    assert m.feed("down", "middle", 500, 500, now=1.0)        # on the ring: closes it
+    assert m.take() == [("close", 0)]
+    assert m.feed("up", "middle", 500, 500, now=1.1)
+
+
+def test_mouse_hook_tries_again_when_the_setting_changes(monkeypatch):
+    from rotary import mouse
+    tries = []
+
+    def broken(owner):
+        tries.append(owner.button)
+        raise OSError("no permission yet")
+
+    monkeypatch.setattr(mouse, "_WindowsHook", broken)
+    monkeypatch.setattr(mouse, "_PynputWatch", broken)
+    t = mouse.MouseTrigger()
+    t.configure("middle")
+    t.configure("middle")                                    # every settings change: not again and again
+    assert tries == ["middle"] and not t.running
+    t.configure("back")                                      # a new setting (permission granted since?)
+    assert tries == ["middle", "back"]
+
+
 def test_a_window_that_takes_the_mouse_is_left_to_it():
     m = MouseLogic("middle")                                 # Linux, opened for the mouse: its own window
     m.set_active(True, (500, 500, 300), window=True)

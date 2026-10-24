@@ -389,6 +389,7 @@ class GestureEngine:
         self._open_palm_t = -1e9
         self._open_palm_c = (0.0, 0.0)
         self._ready_t = -1e9                  # last frame the open palm was ready to count toward opening
+        self._paused = False                  # …and it has missed a frame or more since, within HOLD_GRACE
         self._fist_bad_since: float | None = None
         self._cooldown_until = 0.0
         self._presented = False
@@ -790,8 +791,9 @@ class GestureEngine:
         if not (s.still_summon and self._presented and open_hand):
             self._pause_hold(now)
             return []
-        if self._anchor is not None and now - self._ready_t > 0.1:
+        if self._anchor is not None and self._paused:
             self._still_start += now - self._ready_t     # back after a short gap: carry on where it was
+        self._paused = False
         self._ready_t = now
         if self._anchor is None:
             self._anchor = (self._cx, self._cy)
@@ -818,6 +820,9 @@ class GestureEngine:
         if self._anchor is None or now - self._ready_t > HOLD_GRACE:
             self._anchor = None
             self._arming = 0.0
+            self._paused = False
+        else:
+            self._paused = True
 
     def _open(self, reason: str, now: float) -> list:
         self.phase = Phase.OPEN

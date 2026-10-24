@@ -118,7 +118,9 @@ class MouseLogic:
         # the trigger button
         if button and button == self.button:
             if kind == "down":
-                if self.active:
+                # Open for the mouse: it closes it. Opened by a hand: only on the ring itself; elsewhere it's
+                # still the app's middle click (or the usual hold).
+                if self.manual or (self.active and self._inside(x, y)):
                     self._eat_up.add(button)
                     self.out.append(("close", 0))
                     return True
@@ -200,6 +202,8 @@ class MouseTrigger(QObject):
     def configure(self, button: str) -> None:
         """"middle" | "back" | "forward" | "off". The mouse keeps working on the rotary either way."""
         button = button if button in BUTTONS else ""
+        if button != self.button:
+            self._failed = False          # a new setting (or a permission granted since): worth another try
         self.button = button
         with self._lock:
             self.logic.button = button
