@@ -1,6 +1,7 @@
 """The first-run tour: which cards each user gets, goals ticking off, skipping, and the config flag."""
 import json
 
+import shiboken6
 from PySide6.QtWidgets import QApplication
 
 from rotary import actions, tutorial
@@ -89,6 +90,7 @@ def test_window_walks_through_and_reports_how_it_ended():
     for _ in range(len(steps)):
         w.next()
     assert ended == [True] and not w.isVisible() and not w.practice
+    shiboken6.delete(w)             # now, while the QApplication is still there (as the app does with deleteLater)
 
     ended.clear()
     w = TutorialWindow(steps, reduce_motion=True)
@@ -97,6 +99,7 @@ def test_window_walks_through_and_reports_how_it_ended():
     w.skip.click()
     w.end(False)                                                # only reported once
     assert ended == [False]
+    shiboken6.delete(w)
 
 
 def test_new_users_get_the_tour_and_existing_users_dont(tmp_path):

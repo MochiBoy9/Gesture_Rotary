@@ -1788,6 +1788,11 @@ class RotaryApp(QObject):
             self._save_cfg()
 
     def _shutdown(self) -> None:
+        if self.tour is not None:            # quit mid-tour: it picks up again next time (tutorial_done stays false)
+            import shiboken6
+            self.tour.finished.disconnect()
+            shiboken6.delete(self.tour)       # while Qt is still up; Python would free it after the QApplication
+            self.tour = None
         if self.live.isRunning():
             self.live.stop()
             self.live.wait(2000)
