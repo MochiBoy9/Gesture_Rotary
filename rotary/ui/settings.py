@@ -1556,6 +1556,9 @@ class GesturesPage(QWidget):
         self.dist_row = c.add(Row("Move distance", "How far you slide your hand before it moves", self.dist))
         self.speed = SliderControl(0.4, 2.5, 0.1, g.scroll_speed, lambda x: f"{x:.1f}×")
         self.speed_row = c.add(Row("Scroll speed", "How quickly it keeps going while you hold", self.speed))
+        self.grip_auto = SliderControl(0.0, 2.0, 0.1, g.grip_auto_seconds, lambda x: "Off" if x <= 0 else f"{x:.1f} s")
+        c.add(Row("Fist keeps turning", "Hold your fist turned this long and the ring keeps going by itself, "
+                                        "until you turn back", self.grip_auto))
         v.addWidget(c)
 
         c = Card("Launching", "Point with your index finger while the rotary is open to use finger controls.")
@@ -1588,6 +1591,11 @@ class GesturesPage(QWidget):
         c.add(Row("Resize windows", "Pinch with both hands, then pull apart or push together. Side by side "
                                     "changes the width, one above the other the height, opposite corners both",
                   self.winsize))
+        self.vol_corner = Segmented([("top-left", "Top left"), ("top-right", "Top right"),
+                                     ("bottom-left", "Bottom left"), ("bottom-right", "Bottom right")], self._corner())
+        self.vol_corner.setFixedWidth(400)
+        c.add(Row("Volume ring corner", "The volume gets a full-size ring of its own, in this corner of the "
+                                        "screen", self.vol_corner))
         v.addWidget(c)
 
         c = Card("Recognition")
@@ -1629,11 +1637,16 @@ class GesturesPage(QWidget):
         self.winsize.toggled.connect(lambda on: self.set("window_resize", on))
         self.slides.toggled.connect(lambda on: self._mode("slides", on))
         self.video.toggled.connect(lambda on: self._mode("video", on))
+        self.vol_corner.changed.connect(lambda k: self._mode("volume_corner", k))
+        self.grip_auto.changed.connect(lambda x: self.set("grip_auto_seconds", x))
         self.refresh()
 
-    def _mode(self, key: str, on: bool) -> None:
+    def _mode(self, key: str, on) -> None:
         self.app.cfg.setdefault("modes", {})[key] = on
         self.app.apply_config()
+
+    def _corner(self) -> str:
+        return (self.app.cfg.get("modes") or {}).get("volume_corner", "bottom-right")
 
     def g(self) -> GestureSettings:
         return GestureSettings.from_dict(self.app.cfg.get("gestures"))
@@ -1681,6 +1694,8 @@ class GesturesPage(QWidget):
         mc = {"slides": True, "video": True, **(self.app.cfg.get("modes") or {})}
         self.slides.set_silent(bool(mc["slides"]))
         self.video.set_silent(bool(mc["video"]))
+        self.vol_corner.set_value(self._corner())
+        self.grip_auto.set_value(g.grip_auto_seconds)
         self.cal_label.setText("Flipped" if g.flip_handedness else "Standard")
         self._texts()
 

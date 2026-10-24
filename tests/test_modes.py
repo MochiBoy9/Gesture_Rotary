@@ -112,15 +112,86 @@ def test_while_open_clicks_and_scrolls_outside_stop_here():
     m.set_active(True, (500, 500, 300))
     assert m.feed("wheel", "", 50, 50, delta=-120)           # outside: turns the rotary, the app sees nothing
     assert m.take() == [("turn", 1)]
-    assert not m.feed("wheel", "", 500, 400, delta=-120)     # over the rotary: its own window handles it
     assert m.feed("down", "left", 50, 50) and m.take() == [("close", 0)]
     assert m.feed("up", "left", 50, 50)
     assert m.feed("down", "right", 50, 50) and m.take() == [("back", 0)]
     assert m.feed("up", "right", 50, 50)
-    assert not m.feed("down", "left", 520, 520)              # on the rotary: a normal click on it
     m.set_active(False)
     assert not m.feed("wheel", "", 50, 50, delta=-120)
     assert not m.feed("down", "left", 50, 50)
+
+
+def test_the_mouse_works_on_the_rotary_over_any_app():
+    """Over the ring the hook takes the wheel and the clicks itself, so the browser or game underneath never
+    scrolls or gets clicked, and the rotary turns even when its window lets the mouse through."""
+    m = MouseLogic("middle")
+    m.set_active(True, (500, 500, 300))
+    assert m.feed("wheel", "", 500, 400, delta=-120)
+    assert m.take() == [("turn", 1)]
+    assert m.feed("down", "left", 520, 520)                  # press on the ring: the start of a drag or a click
+    assert m.take_pointer() == [("press", 520, 520)]
+    assert m.wants_moves
+    assert not m.feed("move", "", 600, 520)                  # moves are never held back (the pointer would freeze)
+    assert not m.feed("move", "", 900, 900)                  # dragging out past the ring keeps going
+    assert m.feed("up", "left", 900, 900)
+    assert m.take_pointer() == [("drag", 600, 520), ("drag", 900, 900), ("release", 900, 900)]
+    assert not m.wants_moves
+    assert m.feed("down", "right", 500, 500) and m.take() == [("back", 0)]
+    assert m.feed("up", "right", 500, 500)
+
+
+def test_opened_by_hand_only_the_ring_is_ours():
+    m = MouseLogic("middle")
+    m.set_active(True, (500, 500, 300), manual=False)
+    assert not m.feed("wheel", "", 50, 50, delta=-120)       # elsewhere the app scrolls as usual
+    assert not m.feed("down", "left", 50, 50)
+    assert not m.feed("up", "left", 50, 50)
+    assert m.take() == [] and m.take_pointer() == []
+    assert m.feed("wheel", "", 500, 500, delta=120) and m.take() == [("turn", -1)]
+    assert m.feed("down", "left", 500, 500) and m.take_pointer() == [("press", 500, 500)]
+    m.set_active(False)                                      # closed mid-press: the release isn't the app's
+    assert m.feed("up", "left", 500, 500)
+    assert m.take_pointer() == []
+
+
+def test_middle_button_on_a_hand_opened_rotary():
+    """Opened by a hand, the middle button closes it only when pressed on the ring; elsewhere it is still the
+    app's middle click (a link opened in a new tab, say)."""
+    m = MouseLogic("middle")
+    m.set_active(True, (500, 500, 300), manual=False)
+    assert m.feed("down", "middle", 50, 50, now=0.0)          # held back while we find out, as usual
+    assert m.feed("up", "middle", 50, 50, now=0.1)
+    assert m.replay == "middle" and m.take() == []            # a quick click: sent on to the app
+    assert m.feed("down", "middle", 500, 500, now=1.0)        # on the ring: closes it
+    assert m.take() == [("close", 0)]
+    assert m.feed("up", "middle", 500, 500, now=1.1)
+
+
+def test_mouse_hook_tries_again_when_the_setting_changes(monkeypatch):
+    from rotary import mouse
+    tries = []
+
+    def broken(owner):
+        tries.append(owner.button)
+        raise OSError("no permission yet")
+
+    monkeypatch.setattr(mouse, "_WindowsHook", broken)
+    monkeypatch.setattr(mouse, "_PynputWatch", broken)
+    t = mouse.MouseTrigger()
+    t.configure("middle")
+    t.configure("middle")                                    # every settings change: not again and again
+    assert tries == ["middle"] and not t.running
+    t.configure("back")                                      # a new setting (permission granted since?)
+    assert tries == ["middle", "back"]
+
+
+def test_a_window_that_takes_the_mouse_is_left_to_it():
+    m = MouseLogic("middle")                                 # Linux, opened for the mouse: its own window
+    m.set_active(True, (500, 500, 300), window=True)
+    assert not m.feed("wheel", "", 500, 400, delta=-120)
+    assert not m.feed("down", "left", 520, 520)
+    assert m.take() == [] and m.take_pointer() == []
+    assert m.feed("wheel", "", 50, 50, delta=-120) and m.take() == [("turn", 1)]
 
 
 def test_trigger_closes_when_open():
@@ -140,11 +211,13 @@ def test_off_does_nothing():
     assert m.take() == []
 
 
-def test_mouse_hook_lets_the_volume_slider_through():
+def test_mouse_hook_counts_the_volume_button_as_the_rotary():
     m = MouseLogic("middle")
     m.set_active(True, (500, 500, 300), ((830, 300, 880, 700),))
-    assert not m.feed("down", "left", 850, 500)          # on the slider beside the ring: the rotary's own
-    assert not m.feed("wheel", "", 850, 500, delta=120)
+    assert m.feed("down", "left", 850, 500)               # on the button beside the ring: the rotary's
+    assert m.take_pointer() == [("press", 850, 500)]
+    assert m.feed("up", "left", 850, 500)
+    assert m.take_pointer() == [("release", 850, 500)]
     assert m.take() == []
     assert m.feed("down", "left", 950, 500)               # beyond it: closes
     assert m.take() == [("close", 0)]

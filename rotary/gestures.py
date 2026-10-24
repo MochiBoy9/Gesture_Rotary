@@ -30,6 +30,12 @@ PINKY_MCP = 17
 # (mcp, pip, dip, tip) for index, middle, ring, pinky
 FINGERS = ((5, 6, 7, 8), (9, 10, 11, 12), (13, 14, 15, 16), (17, 18, 19, 20))
 PALM_POINTS = [0, 5, 9, 13, 17]
+# A hand that's being held up to open the rotary loses it for a moment now and then: a frame or two dropped
+# against the face, a flicker of "touching the face", motion blur as it moves. Gaps this short pause the
+# hold instead of starting it over, and don't spoil a grab.
+HOLD_GRACE = 0.45
+FIST_GRACE = 0.25
+GRIP_AUTO_LEAN = 1.6              # a fist held this many items' turn away from where it closed keeps turning
 
 
 # --------------------------------------------------------------------------- #
@@ -268,6 +274,7 @@ class GestureSettings:
     # grip turning: close the hand around an imaginary knob and tilt it
     detent_force: float = 0.28        # extra turn (in items) past the halfway point before the knob clicks over
     grip_release_seconds: float = 1.5  # an open hand within this long is a re-grip; longer switches to palm mode
+    grip_auto_seconds: float = 0.7    # a fist held turned this long keeps turning by itself, like tilting (0 = off)
     # launching
     dwell_seconds: float = 1.6
     pinch_click: bool = True
@@ -383,6 +390,9 @@ class GestureEngine:
         self._arming = 0.0
         self._open_palm_t = -1e9
         self._open_palm_c = (0.0, 0.0)
+        self._ready_t = -1e9                  # last frame the open palm was ready to count toward opening
+        self._paused = False                  # …and it has missed a frame or more since, within HOLD_GRACE
+        self._fist_bad_since: float | None = None
         self._cooldown_until = 0.0
         self._presented = False
         # open state
@@ -398,6 +408,11 @@ class GestureEngine:
         self._grip_start_sel: int | None = None
         self._grip_mode = False
         self._grip_open_since: float | None = None
+        self._grip_neutral = 0.0              # the hand's roll when the fist closed
+        self._auto_dir = 0                    # a held fist turning by itself: -1 / +1
+        self._auto_hold: tuple[float, float] | None = None   # (roll, since) while the fist is held turned
+        self._auto_settle = False             # after turning by itself: no clicks until the hand comes back
+        self._auto_peak = 0.0
         self._need_unpoint = False
         self._lost_since: float | None = None
         self._back_since: float | None = None
@@ -740,8 +755,10 @@ class GestureEngine:
         f = self._f
         _, _, _, need_open_palm, _, grip_hold, max_speed = s.profile
         if not tracked or f is None or self.two_up:
-            self._anchor = None
-            self._arming = 0.0
+            self._fist_bad_since = None
+            if self.two_up:
+                self._ready_t = -1e9
+            self._pause_hold(now)
             return []
         cooling = now < self._cooldown_until
         open_hand = self._grip_ema < 0.3
@@ -761,14 +778,25 @@ class GestureEngine:
             held = self._grip_since is not None and now - self._grip_since >= grip_hold
             if fist_ok and held:
                 return self._open("grip", now)
-            if not fist_ok:
-                self.grip_armed = False      # this fist doesn't count; open the hand to try again
+            if fist_ok:
+                self._fist_bad_since = None
+            else:
+                # this fist doesn't count (open the hand to try again), unless it's only a moment's glitch
+                self._fist_bad_since = self._fist_bad_since if self._fist_bad_since is not None else now
+                if now - self._fist_bad_since >= FIST_GRACE or not need_open_palm \
+                        or now - self._open_palm_t > s.grab_window:
+                    self.grip_armed = False
+        else:
+            self._fist_bad_since = None
 
         # ---- hold an open palm still
         if not (s.still_summon and self._presented and open_hand):
-            self._anchor = None
-            self._arming = 0.0
+            self._pause_hold(now)
             return []
+        if self._anchor is not None and self._paused:
+            self._still_start += now - self._ready_t     # back after a short gap: carry on where it was
+        self._paused = False
+        self._ready_t = now
         if self._anchor is None:
             self._anchor = (self._cx, self._cy)
             self._still_start = now
@@ -786,6 +814,17 @@ class GestureEngine:
             if cooling:
                 self._still_start = now
         return []
+
+    def _pause_hold(self, now: float) -> None:
+        """The palm isn't ready this frame. A short gap keeps the hold where it is (its time stops); a longer
+        one, or a hand that's gone, starts it over."""
+        self._arming = min(self._arming, 0.999)
+        if self._anchor is None or now - self._ready_t > HOLD_GRACE:
+            self._anchor = None
+            self._arming = 0.0
+            self._paused = False
+        else:
+            self._paused = True
 
     def _open(self, reason: str, now: float) -> list:
         self.phase = Phase.OPEN
@@ -929,7 +968,9 @@ class GestureEngine:
     def _update_grip(self, now: float) -> list:
         """Grip mode: the ring is a heavy knob held in a closed hand. Tilting the hand turns it, one firm
         click per item; opening the hand lets go of it (it stays put, so you can re-grip and keep turning,
-        like a ratchet) and pointing the index finger opens the selected item."""
+        like a ratchet) and pointing the index finger opens the selected item. Like tilting an open palm, a
+        fist held turned well away from where it closed, for a moment, keeps turning by itself until it
+        comes back."""
         s = self.s
         self._dwell = 0.0
         self._push = 0.0
@@ -941,14 +982,23 @@ class GestureEngine:
             self._need_unpoint = False
         if not self.gripping:
             self._rebase = True                      # re-grip picks up from wherever the hand is then
+            self._auto_dir = 0
+            self._auto_hold = None
+            self._auto_settle = False
             self.position = self.sel_raw + self._frac
             if self.pointing and not self._need_unpoint and now - self._point_since >= 0.08:
                 return self._execute(now)
             return []
         if self._rebase:
-            self._base_angle = self._ang
+            self._base_angle = self._grip_neutral = self._ang
             self._base_pos = float(self.sel_raw)
             self._rebase = False
+            self._auto_dir = 0
+            self._auto_hold = None
+            self._auto_settle = False
+        auto = self._grip_auto(now)
+        if auto is not None:
+            return auto
         raw = self._base_pos - math.degrees(self._ang - self._base_angle) / self.step_degrees
         events: list = []
         off = raw - self.sel_raw
@@ -968,6 +1018,49 @@ class GestureEngine:
         # Resistance: the ring strains a little toward the hand, then clicks over to the next item.
         self.position = self.sel_raw + 0.3 * math.tanh(off / 0.6)
         return events
+
+    def _grip_auto(self, now: float) -> list | None:
+        """A fist held turned: after `grip_auto_seconds` it steps on by itself, faster the further it's turned,
+        until the hand comes back toward where it closed. None while the knob simply follows the hand."""
+        s = self.s
+        step_deg = max(self.step_degrees, 1e-3)
+        lean = math.degrees(self._ang - self._grip_neutral) / step_deg      # + = clockwise = earlier items
+        if self._auto_dir:
+            self._auto_peak = max(self._auto_peak, abs(lean))
+            if abs(lean) < self._auto_peak - 0.35 or (lean > 0) != (self._auto_dir < 0):
+                self._auto_dir = 0                   # coming back toward the middle: stop, without clicking back
+                self._auto_settle = True
+                self._auto_hold = None
+            else:
+                events: list = []
+                if now >= self._next_step:
+                    excess = min(1.0, max(0.0, abs(lean) - GRIP_AUTO_LEAN))
+                    self._next_step = now + (0.42 - 0.26 * excess) / max(0.2, s.scroll_speed)
+                    events = self._step(self._auto_dir, now)
+                    if not events:                   # at the end of a slides / video ring
+                        self._next_step = now + 0.2
+                self.position = self.sel_raw + 0.3 * math.tanh(-lean / 2.0)
+                return events
+        if self._auto_settle:
+            if abs(lean) >= 0.5:
+                self.position = self.sel_raw + 0.3 * math.tanh(-lean / 4.0)
+                return []
+            self._auto_settle = False                # home: the knob follows the hand again, from where it closed
+            self._base_angle = self._grip_neutral
+            self._base_pos = float(self.sel_raw)
+        if s.grip_auto_seconds <= 0 or self.n <= 1 or abs(lean) < GRIP_AUTO_LEAN:
+            self._auto_hold = None
+            return None
+        hold = self._auto_hold
+        if hold is None or abs(math.degrees(self._ang - hold[0])) > 0.35 * step_deg:
+            self._auto_hold = (self._ang, now)       # still turning: wait for it to settle
+            return None
+        if now - hold[1] < s.grip_auto_seconds:
+            return None
+        self._auto_dir = -1 if lean > 0 else 1
+        self._auto_peak = abs(lean)
+        self._next_step = now
+        return self._grip_auto(now)
 
     def _update_volume(self, tracked: bool, now: float) -> list:
         """Index and middle finger up, the others curled: slide the hand up for louder, down for quieter,

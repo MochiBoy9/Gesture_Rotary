@@ -39,6 +39,25 @@
 - **Leave a call** from the notch: hover the call for Leave (Teams, Zoom, Slack; Discord once its *Disconnect*
   keybind is set to Ctrl + Shift + H), or right-click → Leave the call.
 
+### Added
+- **The mouse works on the rotary wherever it is.** Whenever the rotary is on screen — opened by a hand, the
+  mouse, the keyboard or the notch — you can scroll over the ring to turn it, press and drag it around like a
+  knob, and click an item or the centre (the app's icon) to launch it. These are caught before the app
+  underneath sees them, so turning and clicking the rotary works the same over a web browser, a game or any
+  other app. (On Linux the ring still turns, but the app underneath may receive the clicks as well.)
+- **A fist keeps turning when you hold it.** Like leaning an open palm, holding your fist turned to one side now
+  keeps the ring stepping on by itself — faster the further you turn — until you bring your hand back, as well
+  as the firm click-per-item knob it already was. How long to hold is in *Controls → Fist keeps turning*.
+- **The volume gets a full-size ring of its own.** Changing the volume with two fingers (or the volume button)
+  now shows a full rotary volume ring in a corner of the screen, with the same turning and degree physics as the
+  slides and video rings, instead of a small bar. Its corner is set in *Controls → Volume ring corner*.
+
+### Fixed
+- **Moving your hand away from your face no longer breaks tracking.** A hand moving out from in front of the
+  face (or past the chin) could flicker as "touching the face" for a frame or two, which reset the hold-to-open
+  timer and spoiled a fist being formed. A hand now has to rest against the face for a moment before it counts,
+  and a brief glitch pauses the open-palm hold instead of starting it over.
+
 ## [1.10.0] — Gestures in front of your face
 
 ### Changed
