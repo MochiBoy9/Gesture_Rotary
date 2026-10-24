@@ -1572,7 +1572,7 @@ class GesturesPage(QWidget):
         c.add(Row("Push sensitivity", None, self.push_s))
         v.addWidget(c)
 
-        c = Card("Volume, slides and videos", "Two fingers change the volume whether the rotary is open or not. "
+        c = Card("Volume, windows, slides and videos", "Two fingers change the volume whether the rotary is open or not. "
                                              "Over a slideshow or a video the rotary opens as a slides or video "
                                              "ring; click its centre, pinch or point for your items instead.")
         self.vol = Switch(g.volume_slide)
@@ -1584,6 +1584,10 @@ class GesturesPage(QWidget):
         self.video = Switch(bool(mc["video"]))
         c.add(Row("Video ring", "Over YouTube, Netflix, Hulu, VLC and other players: a full turn is the whole "
                                 "video", self.video))
+        self.winsize = Switch(g.window_resize)
+        c.add(Row("Resize windows", "Pinch with both hands, then pull apart or push together. Side by side "
+                                    "changes the width, one above the other the height, opposite corners both",
+                  self.winsize))
         v.addWidget(c)
 
         c = Card("Recognition")
@@ -1622,6 +1626,7 @@ class GesturesPage(QWidget):
         self.push.toggled.connect(lambda on: self.set("finger_push", on))
         self.push_s.changed.connect(lambda x: self.set("push_sensitivity", x))
         self.vol.toggled.connect(lambda on: self.set("volume_slide", on))
+        self.winsize.toggled.connect(lambda on: self.set("window_resize", on))
         self.slides.toggled.connect(lambda on: self._mode("slides", on))
         self.video.toggled.connect(lambda on: self._mode("video", on))
         self.refresh()
@@ -1672,6 +1677,7 @@ class GesturesPage(QWidget):
         self.push.set_silent(g.finger_push)
         self.push_s.set_value(g.push_sensitivity)
         self.vol.set_silent(g.volume_slide)
+        self.winsize.set_silent(g.window_resize)
         mc = {"slides": True, "video": True, **(self.app.cfg.get("modes") or {})}
         self.slides.set_silent(bool(mc["slides"]))
         self.video.set_silent(bool(mc["video"]))

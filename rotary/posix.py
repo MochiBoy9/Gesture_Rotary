@@ -234,6 +234,126 @@ def focus_app(name: str, bundle: str = "") -> bool:
     return False
 
 
+# --------------------------------------------------------------------------- resizing the window in front
+def _ax(element, attr: str):
+    from ApplicationServices import AXUIElementCopyAttributeValue
+    err, value = AXUIElementCopyAttributeValue(element, attr, None)
+    return None if err else value
+
+
+def _ax_value(value, kind):
+    from ApplicationServices import AXValueGetValue
+    ok, out = AXValueGetValue(value, kind, None)
+    return out if ok else None
+
+
+def _mac_active_window():
+    from AppKit import NSScreen, NSWorkspace
+    from ApplicationServices import AXUIElementCreateApplication, kAXValueCGPointType, kAXValueCGSizeType
+
+    from .resize import ActiveWindow, Rect
+    app = NSWorkspace.sharedWorkspace().frontmostApplication()
+    if app is None or app.processIdentifier() == os.getpid():
+        return None
+    win = _ax(AXUIElementCreateApplication(app.processIdentifier()), "AXFocusedWindow")
+    if win is None or _ax(win, "AXFullScreen") or _ax(win, "AXMinimized"):
+        return None
+    pos, size = _ax(win, "AXPosition"), _ax(win, "AXSize")
+    pos = _ax_value(pos, kAXValueCGPointType) if pos is not None else None
+    size = _ax_value(size, kAXValueCGSizeType) if size is not None else None
+    if pos is None or size is None:
+        return None
+    rect = Rect(int(pos.x), int(pos.y), int(size.width), int(size.height))
+    # The Dock- and menu-bar-free part of the window's screen, turned into the same top-left-origin points.
+    screens = list(NSScreen.screens())
+    top = screens[0].frame().size.height if screens else 0
+    cx, cy = rect.x + rect.w / 2, top - (rect.y + rect.h / 2)
+    work = None
+    for s in screens:
+        f, v = s.frame(), s.visibleFrame()
+        if f.origin.x <= cx < f.origin.x + f.size.width and f.origin.y <= cy < f.origin.y + f.size.height:
+            work = Rect(int(v.origin.x), int(top - v.origin.y - v.size.height), int(v.size.width), int(v.size.height))
+    title = _ax(win, "AXTitle") or app.localizedName() or ""
+    return ActiveWindow(win, rect, work or Rect(0, 0, 0, 0), str(title))
+
+
+def _mac_set_window_rect(win, rect) -> bool:
+    import Quartz
+    from ApplicationServices import AXUIElementSetAttributeValue, AXValueCreate, kAXValueCGPointType, kAXValueCGSizeType
+    size = AXValueCreate(kAXValueCGSizeType, Quartz.CGSizeMake(rect.w, rect.h))
+    pos = AXValueCreate(kAXValueCGPointType, Quartz.CGPointMake(rect.x, rect.y))
+    # Size, then position, then size again: some apps clamp the size against the screen edge first.
+    ok = AXUIElementSetAttributeValue(win, "AXSize", size) == 0
+    AXUIElementSetAttributeValue(win, "AXPosition", pos)
+    AXUIElementSetAttributeValue(win, "AXSize", size)
+    return ok
+
+
+_x11_last: dict[str, tuple[int, int]] = {}      # window id → the position we last asked for
+
+
+def _x11_active_window():
+    from .resize import ActiveWindow, Rect
+    if not shutil.which("xdotool"):
+        return None
+    wid = _out(["xdotool", "getactivewindow"], 2).strip()
+    if not wid:
+        return None
+    pid = _out(["xdotool", "getwindowpid", wid], 2).strip()
+    if pid.isdigit() and int(pid) == os.getpid():
+        return None
+    if shutil.which("xprop"):
+        props = _out(["xprop", "-id", wid, "_NET_WM_STATE", "_NET_WM_WINDOW_TYPE"], 2)
+        if any(k in props for k in ("_MAXIMIZED_", "_FULLSCREEN", "_HIDDEN", "_TYPE_DESKTOP", "_TYPE_DOCK")):
+            return None
+    geo = dict(line.split("=", 1) for line in _out(["xdotool", "getwindowgeometry", "--shell", wid], 2).split()
+               if "=" in line)
+    try:
+        rect = Rect(int(geo["X"]), int(geo["Y"]), int(geo["WIDTH"]), int(geo["HEIGHT"]))
+    except (KeyError, ValueError):
+        return None
+    work = Rect(0, 0, 0, 0)
+    if shutil.which("xprop"):
+        nums = [int(n) for n in _out(["xprop", "-root", "_NET_WORKAREA"], 2).split("=")[-1].replace(",", " ").split()
+                if n.isdigit()]
+        if len(nums) >= 4:
+            work = Rect(*nums[:4])
+    _x11_last[wid] = (rect.x, rect.y)
+    return ActiveWindow(wid, rect, work, _out(["xdotool", "getwindowname", wid], 2).strip())
+
+
+def _x11_set_window_rect(wid: str, rect) -> bool:
+    # Window managers disagree on whether a move places the frame or the client, so move by the
+    # difference from last time instead of to an absolute spot: the title bar can't make it jump.
+    lx, ly = _x11_last.get(wid, (rect.x, rect.y))
+    _x11_last[wid] = (rect.x, rect.y)
+    args = ["xdotool", "windowsize", wid, str(rect.w), str(rect.h)]
+    if (rect.x, rect.y) != (lx, ly):
+        args += ["windowmove", "--relative", wid, str(rect.x - lx), str(rect.y - ly)]
+    try:
+        return subprocess.run(args, capture_output=True, timeout=2, stdin=subprocess.DEVNULL).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def active_window():
+    """The window in front if it's an ordinary windowed one (not full screen, maximised or minimised), as an
+    ActiveWindow, or None. macOS needs the Accessibility permission; Linux needs xdotool (X11 / XWayland)."""
+    try:
+        return _mac_active_window() if MAC else _x11_active_window() if LINUX else None
+    except Exception:
+        log.debug("couldn't read the window in front", exc_info=True)
+        return None
+
+
+def set_window_rect(handle, rect) -> bool:
+    try:
+        return _mac_set_window_rect(handle, rect) if MAC else _x11_set_window_rect(handle, rect) if LINUX else False
+    except Exception:
+        log.debug("couldn't resize the window", exc_info=True)
+        return False
+
+
 def send_keys_to(name: str, keys, restore: bool = True, label: str = "", bundle: str = "") -> None:
     """Switch to an app, press a shortcut there, then (optionally) switch back."""
     if MAC:

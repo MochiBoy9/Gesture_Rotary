@@ -313,6 +313,69 @@ def focus_app(exe_name: str, prefer_title: str = "", bundle: str = "") -> bool:
     return False
 
 
+SKIP_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Windows.UI.Core.CoreWindow"}
+WS_CAPTION, WS_THICKFRAME = 0x00C00000, 0x00040000
+GWL_STYLE = -16
+SWP_NOZORDER, SWP_NOACTIVATE, SWP_NOOWNERZORDER = 0x4, 0x10, 0x200
+
+if WIN:
+    class RECT(ctypes.Structure):
+        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long),
+                    ("bottom", ctypes.c_long)]
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", RECT), ("rcWork", RECT), ("dwFlags", wintypes.DWORD)]
+
+    user32.IsZoomed.argtypes = [wintypes.HWND]
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
+    user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+    user32.MonitorFromWindow.restype = wintypes.HANDLE
+    user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MONITORINFO)]
+    user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_int, wintypes.UINT]
+
+
+def active_window():
+    """The window in front, if it's an ordinary windowed one that can be resized (not maximised, minimised,
+    full screen, the desktop or the taskbar, and not one of ours). An ActiveWindow, or None."""
+    if not WIN:
+        return posix.active_window()
+    from .resize import ActiveWindow, Rect
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd or not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd) or user32.IsZoomed(hwnd):
+        return None
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if pid.value == os.getpid():
+        return None
+    cls = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, cls, 256)
+    style = user32.GetWindowLongW(hwnd, GWL_STYLE)
+    if cls.value in SKIP_CLASSES or not style & WS_THICKFRAME:
+        return None
+    r = RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
+        return None
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    user32.GetMonitorInfoW(user32.MonitorFromWindow(hwnd, 2), ctypes.byref(mi))     # MONITOR_DEFAULTTONEAREST
+    m, wk = mi.rcMonitor, mi.rcWork
+    if (r.left, r.top, r.right, r.bottom) == (m.left, m.top, m.right, m.bottom) and not style & WS_CAPTION:
+        return None                                  # borderless full screen
+    return ActiveWindow(int(hwnd), Rect(r.left, r.top, r.right - r.left, r.bottom - r.top),
+                        Rect(wk.left, wk.top, wk.right - wk.left, wk.bottom - wk.top), _title(hwnd))
+
+
+def set_window_rect(handle, rect) -> bool:
+    if not WIN:
+        return posix.set_window_rect(handle, rect)
+    if not user32.IsWindow(handle) or user32.IsZoomed(handle):
+        return False
+    return bool(user32.SetWindowPos(handle, None, rect.x, rect.y, rect.w, rect.h,
+                                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER))
+
+
 def send_keys_to(exe_name: str, keys, restore: bool = True, prefer_title: str = "", label: str = "",
                  bundle: str = "") -> None:
     """Switch to an app's window, press a shortcut there, then (optionally) switch back."""

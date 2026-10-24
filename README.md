@@ -50,7 +50,7 @@ running from source, it just says a new version is out.
 - The keyboard shortcut and pressing keys work through X11. Under Wayland they only reach XWayland apps, so use
   the notch or the tray icon to open the rotary.
 - Optional: `playerctl` for *now playing* on the notch, `speech-dispatcher` or `espeak-ng` for spoken item
-  names, and `wmctrl` for items that press a shortcut inside another app.
+  names, `wmctrl` for items that press a shortcut inside another app, and `xdotool` for resizing windows with both hands.
 
 ## Using it (palm toward the camera)
 
@@ -65,6 +65,7 @@ running from source, it just says a new version is out.
 | Open hand for 1.5 s | Back to palm mode: **pinch** or **hold still** on an item launches |
 | Back of the hand, or lower it | Closes |
 | **Index + middle finger up**, slide up or down | Changes the volume, like a fader, whether the rotary is open or not |
+| **Pinch with both hands**, then pull apart or push together | Resizes the window in front (if it's windowed): side by side changes the width, one above the other the height, opposite corners both. Let go of the pinch to stop |
 | **Ctrl + Alt + Space** (Mac: **⌃⌥Space**) | Opens from the keyboard: ← → move, Enter launches, Esc closes |
 | **Hold the middle mouse button** | Opens for the mouse, even over a full-screen game (or a side button: *Accessibility*) |
 

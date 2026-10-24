@@ -27,6 +27,7 @@ from .actions import (CONFIG_PATH, Item, back_item, build_items, cleanup_scripts
 from .feedback import Sounds, Speaker
 from .live import LiveWatcher
 from .mouse import MouseTrigger
+from .resize import TwoHandResize, WindowSizer
 from .volume import Volume
 from .weather import WeatherWatcher
 from .gestures import GestureEngine, GestureSettings, HandednessTracker, HandFeatures, Phase, extract_features
@@ -314,6 +315,7 @@ class RotaryApp(QObject):
     mode_data = Signal(int, str, object)   # slides / video ring: (token, what, data) from a background thread
     volume_level = Signal(float)           # the volume slider set this level (-1: unknown)
     volume_read = Signal(float)            # the level when the rotary opened from the mouse / keyboard
+    resize_window = Signal(object)         # two-hand resize began on this ActiveWindow (None: nothing to resize)
 
     def __init__(self, app: QApplication, show_window: bool | None = None):
         super().__init__()
@@ -395,6 +397,9 @@ class RotaryApp(QObject):
         self._was_at_face = False
         self.mouse_trigger = MouseTrigger(self)
         self.mouse_trigger.event.connect(self._on_mouse_trigger)
+        self.resizer = TwoHandResize()
+        self.sizer = WindowSizer(winapi.active_window, winapi.set_window_rect, self.resize_window.emit)
+        self.resize_window.connect(self._on_resize_window)
 
         gen = self.cfg.get("general", {})
         self.camera_on = bool(gen.get("camera", True))
@@ -1471,7 +1476,12 @@ class RotaryApp(QObject):
                 self._calib.append(f.raw_facing)
         else:
             self._prev_center = None
-        self._handle(self.engine.update(f, res.t))
+        for i, other in enumerate(feats):
+            if i != idx:
+                other.at_face = hand_at_face(other, res.faces, aspect)
+        self._update_resize(feats, res.t)
+        # Both hands pinching to resize a window: that's not a gesture for the rotary.
+        self._handle(self.engine.update(None if self.resizer.busy else f, res.t))
         snap = self.engine.snapshot()
         if snap.sliding and not self._was_sliding:
             self.volume.forget()                 # read the level afresh: something else may have changed it
@@ -1491,9 +1501,33 @@ class RotaryApp(QObject):
             self.window.camera.set_frame(res.preview, res.hands, feats, idx, snap, res.faces)
         self._update_pill(snap)
 
+    def _update_resize(self, feats: list[HandFeatures], now: float) -> None:
+        """Two-hand pinch-and-stretch resizes the window in front, while the rotary is put away."""
+        if (self.settings.window_resize and self.engine.phase == Phase.IDLE and not self.keyboard_session
+                and not self.engine.paused):
+            events = self.resizer.update(feats, now)
+        else:
+            events = self.resizer.cancel()
+        for name, payload in events:
+            log.debug("event %s %s", name, payload)
+            if name == "resize_start":
+                self.sizer.begin()
+            elif name == "resize":
+                self.sizer.scale(*payload)
+            elif name == "resize_end":
+                self.sizer.end()
+
+    def _on_resize_window(self, win) -> None:
+        if win is None:
+            self._flash_msg("Bring a windowed app to the front to resize it", "error", AMBER, 2.5)
+        else:
+            self.sounds.play("tick")
+            self._flash_msg("Resizing " + (win.title[:40] or "window"), "dot", BLUE, 1.5)
+
     def _on_heartbeat(self) -> None:
         now = time.monotonic()
         if now - self._last_result_t > 0.25:
+            self._update_resize([], now)
             self._handle(self.engine.update(None, now))
             snap = self.engine.snapshot()
             if self.dial.isVisible():
