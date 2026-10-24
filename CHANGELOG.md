@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Move the notch.** Drag it along the top edge, or pull it down until it stretches and tears off like a drop of
+  liquid, and put it anywhere. Throw it and it glides, bouncing off the screen's edges; bring it back to the top
+  and it merges in. It stays where you left it. A middle click (the scroll wheel) sends it home to the middle.
+- **Calls ringing in.** When Discord, Teams or another call app rings, the notch opens by itself — even while you
+  use the camera — with who's calling (when the app says) and Accept / Decline. Windows.
+- **Leave a call** from the notch: hover the call for Leave (Teams, Zoom, Slack; Discord once its *Disconnect*
+  keybind is set to Ctrl + Shift + H), or right-click → Leave the call.
+
 ## [1.10.0] — Gestures in front of your face
 
 ### Changed

@@ -1892,6 +1892,11 @@ class NotchPage(QWidget):
         c.add(Row("Tuck it away", "Just a thin line until your mouse reaches the top of the screen", self.peek))
         self.fs = Switch(bool(gen.get("notch_hide_fullscreen", True)))
         c.add(Row("Hide during full-screen games and videos", None, self.fs))
+        home = QPushButton("Put it back")
+        home.clicked.connect(lambda: self.app.notch.go_home())
+        c.add(Row("Where it sits", "Drag the notch along the top, or pull it down until it tears off and put it "
+                                   "anywhere — throw it and it glides. A middle click on it sends it home to the "
+                                   "middle of the top edge.", home))
         v.addWidget(c)
 
         isl = {**DEFAULT_ISLAND, **(self.app.cfg.get("island") or {})}
@@ -1916,7 +1921,8 @@ class NotchPage(QWidget):
                                        "is saved" + (f" — watching {', '.join(dict.fromkeys(found))}" if found else ""),
                   self.clips))
         self.calls = Switch(bool(isl["calls"]))
-        c.add(Row("Calls", "Time on a Discord, Teams, Zoom or other call, with Mute (and Deafen) on hover",
+        c.add(Row("Calls", "A call ringing in pops up with Accept and Decline (even while you use the camera); "
+                           "time on a Discord, Teams, Zoom or other call, with Mute, Deafen and Leave on hover",
                   self.calls))
         self.privacy = Switch(bool(isl["privacy"]))
         c.add(Row("Microphone & camera in use", "An orange dot while an app listens, green while one watches",

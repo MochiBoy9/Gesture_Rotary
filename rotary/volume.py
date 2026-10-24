@@ -98,6 +98,87 @@ class _EndpointVolume:
             self.ptr = None
 
 
+IID_IAudioSessionManager2 = "77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F"
+IID_IAudioSessionControl2 = "BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D"
+IID_IAudioMeterInformation = "C02216F6-8C67-4B5B-9D00-D008E73E0064"
+
+
+def audible_pids(threshold: float = 0.005) -> dict[int, float]:
+    """Windows: pid → peak level of each app playing sound on the default speakers right now (a ringing call
+    app shows up here). Empty anywhere else, or if Core Audio can't be reached."""
+    if sys.platform != "win32":
+        return {}
+    ole32 = ctypes.windll.ole32
+    ole32.CoInitializeEx(None, 0x0)                     # this thread may already be set up either way
+    held: list[ctypes.c_void_p] = []
+
+    def release_all():
+        for ptr in reversed(held):
+            _method(ptr, 2, ctypes.c_ulong)()
+
+    def query(ptr, iid: str) -> ctypes.c_void_p | None:
+        out = ctypes.c_void_p()
+        hr = _method(ptr, 0, ctypes.c_long, ctypes.POINTER(_GUID), ctypes.POINTER(ctypes.c_void_p))(
+            ctypes.byref(_GUID.parse(iid)), ctypes.byref(out))
+        if hr != 0 or not out:
+            return None
+        held.append(out)
+        return out
+
+    found: dict[int, float] = {}
+    try:
+        enum = ctypes.c_void_p()
+        hr = ole32.CoCreateInstance(ctypes.byref(_GUID.parse(CLSID_MMDeviceEnumerator)), None, 23,
+                                    ctypes.byref(_GUID.parse(IID_IMMDeviceEnumerator)), ctypes.byref(enum))
+        if hr != 0 or not enum:
+            return {}
+        held.append(enum)
+        dev = ctypes.c_void_p()
+        hr = _method(enum, 4, ctypes.c_long, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p))(
+            0, 1, ctypes.byref(dev))                    # GetDefaultAudioEndpoint(eRender, eMultimedia)
+        if hr != 0 or not dev:
+            return {}
+        held.append(dev)
+        mgr = ctypes.c_void_p()
+        hr = _method(dev, 3, ctypes.c_long, ctypes.POINTER(_GUID), ctypes.c_uint32, ctypes.c_void_p,
+                     ctypes.POINTER(ctypes.c_void_p))(ctypes.byref(_GUID.parse(IID_IAudioSessionManager2)), 23,
+                                                      None, ctypes.byref(mgr))     # Activate
+        if hr != 0 or not mgr:
+            return {}
+        held.append(mgr)
+        sessions = ctypes.c_void_p()
+        if _method(mgr, 5, ctypes.c_long, ctypes.POINTER(ctypes.c_void_p))(ctypes.byref(sessions)) != 0 \
+                or not sessions:                        # GetSessionEnumerator
+            return {}
+        held.append(sessions)
+        count = ctypes.c_int()
+        _method(sessions, 3, ctypes.c_long, ctypes.POINTER(ctypes.c_int))(ctypes.byref(count))
+        for i in range(count.value):
+            ctl = ctypes.c_void_p()
+            if _method(sessions, 4, ctypes.c_long, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p))(
+                    i, ctypes.byref(ctl)) != 0 or not ctl:
+                continue
+            held.append(ctl)
+            state = ctypes.c_int()
+            _method(ctl, 3, ctypes.c_long, ctypes.POINTER(ctypes.c_int))(ctypes.byref(state))
+            if state.value != 1:                        # AudioSessionStateActive
+                continue
+            ctl2, meter = query(ctl, IID_IAudioSessionControl2), query(ctl, IID_IAudioMeterInformation)
+            if ctl2 is None or meter is None:
+                continue
+            pid = ctypes.c_uint32()
+            _method(ctl2, 14, ctypes.c_long, ctypes.POINTER(ctypes.c_uint32))(ctypes.byref(pid))   # GetProcessId
+            peak = ctypes.c_float()
+            _method(meter, 3, ctypes.c_long, ctypes.POINTER(ctypes.c_float))(ctypes.byref(peak))   # GetPeakValue
+            if pid.value and peak.value >= threshold:
+                found[int(pid.value)] = max(found.get(int(pid.value), 0.0), float(peak.value))
+    except OSError:
+        log.debug("couldn't list the apps playing sound", exc_info=True)
+    finally:
+        release_all()
+    return found
+
+
 # --------------------------------------------------------------------------- macOS / Linux commands
 def _run(args: list[str], timeout: float = 3.0) -> str:
     try:

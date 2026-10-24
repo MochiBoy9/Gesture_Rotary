@@ -19,6 +19,7 @@ import datetime as dt
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -27,7 +28,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
-from . import winapi
+from . import volume, winapi
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ class LiveState:
     mic: list[str] = field(default_factory=list)
     camera: list[str] = field(default_factory=list)
     call: tuple[str, float] | None = None     # (app, started — Unix time) while in a voice call
+    incoming: tuple[str, str] | None = None   # (app, who's calling — "" if unknown) while a call rings in
 
 
 # =========================================================================== app names
@@ -376,6 +378,91 @@ def call_from(mic: list[tuple[str, float]]) -> tuple[str, float] | None:
     return None
 
 
+def call_app(exe: str) -> str:
+    """'Discord.exe' → 'Discord', 'ms-teams.exe' → 'Teams'; '' for anything that isn't a call app."""
+    low = exe.lower().removesuffix(".exe").replace(" ", "")
+    for key, name in CALL_APPS.items():
+        if low == key or low.startswith(key):
+            return name
+    return ""
+
+
+_TYPE = r"(?:voice |video |audio |group )?"
+INCOMING_TITLES = [
+    re.compile(rf"^incoming {_TYPE}call(?:\s+from)?(?:\s*[:\-–—|·]\s*|\s+)(?P<who>.+?)$", re.I),
+    re.compile(rf"^incoming {_TYPE}call$", re.I),
+    re.compile(r"^(?P<who>.+?) is (?:video )?calling(?: you)?\b.*$", re.I),
+    re.compile(r"^(?:call|calling|ringing) from (?P<who>.+?)$", re.I),
+    re.compile(r"^(?P<who>.+?) (?:wants to|is trying to) (?:video )?call\b.*$", re.I),
+    re.compile(rf"^(?P<who>.+?)\s*[\-–—|·:]\s*incoming {_TYPE}call\b.*$", re.I),
+]
+_APP_SUFFIX = re.compile(r"\s*[\-–—|·]\s*(?:microsoft teams|teams|discord|zoom(?: workplace)?|slack|skype|whatsapp|"
+                         r"telegram|signal|webex)\s*$", re.I)
+
+
+def caller_from_title(title: str) -> str | None:
+    """Who's calling, from an "incoming call" window's title: None if it isn't one, "" if it doesn't say who."""
+    t = _APP_SUFFIX.sub("", " ".join(title.split()))
+    for pat in INCOMING_TITLES:
+        m = pat.match(t)
+        if m:
+            return (m.groupdict().get("who") or "").strip(" .:-–—|·")
+    return None
+
+
+HELPER_EXES = ("msedgewebview2.exe",)       # new Teams (and others) play their sound from a WebView2 helper
+
+
+def owner_names(tree: dict[int, tuple[str, int]]) -> dict[int, str]:
+    """pid → exe name, with helper processes (WebView2) named after the app that started them."""
+    out = {}
+    for pid, (exe, parent) in tree.items():
+        seen = 0
+        while exe in HELPER_EXES and parent in tree and seen < 4:
+            exe, parent = tree[parent]
+            seen += 1
+        out[pid] = exe
+    return out
+
+
+class RingWatch:
+    """Notices a call ringing in: a call app showing an "incoming call" window, or a call app (not in a call)
+    playing sound on and off for a few seconds — its ringtone. A sound that goes on for a minute without a
+    break is a video or a voice message, not a ring."""
+    RING_SECONDS = 2.5        # sound this long before it counts as ringing…
+    RING_HITS = 3             # …heard this many times (two message pings a moment apart aren't a ring)
+    GAP_SECONDS = 3.5         # a ringtone's pauses are shorter than this
+    MAX_RING_SECONDS = 75.0   # nothing rings this long
+
+    def __init__(self):
+        self._loud: dict[str, list[float]] = {}     # app → [first heard, last heard, times heard]
+        self.current: tuple[str, str] | None = None
+
+    def update(self, procs: dict[int, str], windows: list[tuple[int, str]], audible: dict[int, float],
+               in_call: str = "", now: float | None = None) -> tuple[str, str] | None:
+        now = time.monotonic() if now is None else now
+        for pid, title in windows:
+            app = call_app(procs.get(pid, ""))
+            who = caller_from_title(title) if app else None
+            if who is not None and app != in_call:
+                self.current = (app, who)
+                return self.current
+        heard = {call_app(procs.get(pid, "")) for pid in audible} - {"", in_call}
+        for app in heard:
+            span = self._loud.setdefault(app, [now, now, 0])
+            span[1] = now
+            span[2] += 1
+        for app in [a for a, (_f, last, _n) in self._loud.items() if now - last > self.GAP_SECONDS or a == in_call]:
+            del self._loud[app]
+        ringing = [a for a, (first, last, hits) in self._loud.items()
+                   if self.RING_SECONDS <= last - first <= self.MAX_RING_SECONDS and hits >= self.RING_HITS]
+        if not ringing:
+            self.current = None
+        elif self.current is None or self.current[0] not in ringing:
+            self.current = (ringing[0], "")
+        return self.current
+
+
 # =========================================================================== battery
 class _PowerStatus(ctypes.Structure):
     _fields_ = [("ACLineStatus", ctypes.c_ubyte), ("BatteryFlag", ctypes.c_ubyte),
@@ -615,6 +702,8 @@ class LiveWatcher(QThread):
         self._mic: list[str] = []
         self._cam: list[str] = []
         self._call: tuple[str, float] | None = None
+        self._incoming: tuple[str, str] | None = None
+        self.calls_only = False           # the notch is hidden: just watch for calls (one may ring in)
         self._media_error_logged = False
         self._media_api = None
 
@@ -668,8 +757,21 @@ class LiveWatcher(QThread):
             log.info("no source for what's playing on this system")
         clips = ClipScanner(await asyncio.to_thread(clip_folders))
         power = BatteryWatch()
+        rings = RingWatch()
         tick = 0
         while not self._stop.is_set():
+            if self.opts["calls"] and sys.platform == "win32":
+                await self._poll_ringing(rings)
+            elif self._incoming is not None:
+                self._incoming = None
+            if self.calls_only:
+                if tick % 2 == 0 and self.opts["calls"]:
+                    await self._poll_calls(include_privacy=False)
+                self._media, self._clipping, self._mic, self._cam = None, "", [], []
+                self._publish()
+                tick += 1
+                await self._nap()
+                continue
             if self.opts["media"]:
                 await self._poll_media()
             elif self._media is not None:
@@ -688,22 +790,7 @@ class LiveWatcher(QThread):
                 else:
                     self._clipping = ""
                 if self.opts["privacy"] or self.opts["calls"]:
-                    # One list of what's running, shared by the checks below (each would take its own).
-                    procs = await asyncio.to_thread(winapi.processes) if sys.platform == "win32" else {}
-                    running = set(procs.values()) if sys.platform == "win32" else None
-                    mic = await asyncio.to_thread(in_use_since, "microphone", self.exclude, running)
-                    call = None
-                    if self.opts["calls"]:
-                        started = await asyncio.to_thread(discord_call, procs)
-                        call = ("Discord", started) if started else call_from(mic)
-                        if call and self._call and call[0] == self._call[0]:
-                            call = (call[0], min(call[1], self._call[1]))   # a reconnect isn't a new call
-                    if (call and call[0]) != (self._call and self._call[0]):
-                        log.info("call %s", f"started in {call[0]}" if call else "ended")
-                    self._call = call
-                    self._mic = [n for n, _t in mic] if self.opts["privacy"] else []
-                    self._cam = (await asyncio.to_thread(in_use, "webcam", self.exclude, running)
-                                 if self.opts["privacy"] else [])
+                    await self._poll_calls(include_privacy=self.opts["privacy"])
                 else:
                     self._mic, self._cam, self._call = [], [], None
             if tick % 10 == 0 and self.opts["battery"]:
@@ -713,10 +800,51 @@ class LiveWatcher(QThread):
                 clips.folders = await asyncio.to_thread(clip_folders)      # new tools / folders
             self._publish()
             tick += 1
-            for _ in range(10):
-                if self._stop.is_set():
-                    break
-                await asyncio.sleep(0.1)
+            await self._nap()
+
+    async def _nap(self) -> None:
+        for _ in range(10):
+            if self._stop.is_set():
+                break
+            await asyncio.sleep(0.1)
+
+    async def _poll_calls(self, include_privacy: bool) -> None:
+        # One list of what's running, shared by the checks below (each would take its own).
+        procs = await asyncio.to_thread(winapi.processes) if sys.platform == "win32" else {}
+        running = set(procs.values()) if sys.platform == "win32" else None
+        mic = await asyncio.to_thread(in_use_since, "microphone", self.exclude, running)
+        call = None
+        if self.opts["calls"]:
+            started = await asyncio.to_thread(discord_call, procs)
+            call = ("Discord", started) if started else call_from(mic)
+            if call and self._call and call[0] == self._call[0]:
+                call = (call[0], min(call[1], self._call[1]))   # a reconnect isn't a new call
+        if (call and call[0]) != (self._call and self._call[0]):
+            log.info("call %s", f"started in {call[0]}" if call else "ended")
+        self._call = call
+        self._mic = [n for n, _t in mic] if include_privacy else []
+        self._cam = await asyncio.to_thread(in_use, "webcam", self.exclude, running) if include_privacy else []
+
+    async def _poll_ringing(self, rings: RingWatch) -> None:
+        def look():
+            # A ringtone has gaps: listen three times over a third of a second.
+            heard: dict[int, float] = {}
+            for i in range(3):
+                for pid, peak in volume.audible_pids().items():
+                    heard[pid] = max(heard.get(pid, 0.0), peak)
+                if i < 2:
+                    time.sleep(0.15)
+            return owner_names(winapi.process_tree()), winapi.window_titles(), heard
+        try:
+            procs, windows, heard = await asyncio.to_thread(look)
+        except Exception:
+            log.debug("couldn't check for a ringing call", exc_info=True)
+            return
+        ringing = rings.update(procs, windows, heard, self._call[0] if self._call else "")
+        if ringing != self._incoming:
+            log.info("incoming call %s", f"in {ringing[0]}" + (" (caller known)" if ringing[1] else "")
+                     if ringing else "stopped ringing")
+        self._incoming = ringing
 
     async def _poll_media(self) -> None:
         before = self._media
@@ -736,10 +864,10 @@ class LiveWatcher(QThread):
         self._publish()
 
     def _publish(self) -> None:
-        st = LiveState(self._media, self._clipping, list(self._mic), list(self._cam), self._call)
+        st = LiveState(self._media, self._clipping, list(self._mic), list(self._cam), self._call, self._incoming)
         last = self._last
         if (last is None or st.clipping != last.clipping or st.mic != last.mic or st.camera != last.camera
-                or st.call != last.call
+                or st.call != last.call or st.incoming != last.incoming
                 or (st.media is None) != (last.media is None)
                 or (st.media is not None and last.media is not None and (
                     st.media.key != last.media.key or st.media.playing != last.media.playing

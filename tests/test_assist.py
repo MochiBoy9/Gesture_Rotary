@@ -392,6 +392,9 @@ class _Press:
     def position(self):
         return self.pt
 
+    def globalPosition(self):
+        return self.pt
+
 
 def test_notch_shows_the_answer_then_its_card_on_hover():
     n = NotchWindow()
@@ -414,6 +417,7 @@ def test_notch_shows_the_answer_then_its_card_on_hover():
     opened = []
     n.clicked.connect(lambda: opened.append(1))
     n.mousePressEvent(_Press(QPointF(n.body_rect().center().x(), 20)))   # a click puts it away, no rotary
+    n.mouseReleaseEvent(_Press(QPointF(n.body_rect().center().x(), 20)))
     assert n.answer is None and opened == []
 
 

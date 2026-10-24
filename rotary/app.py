@@ -351,6 +351,9 @@ class RotaryApp(QObject):
         self._assist_until = 0.0           # keeps the notch up for a screen-assist message
         self.live = LiveWatcher(self)
         self.live.state.connect(self.notch.set_live)
+        self.live.state.connect(self._on_live_state)
+        self._ringing: tuple[str, str] | None = None     # a call ringing in: the notch shows it, camera or not
+        self.notch.moved.connect(self._on_notch_moved)
         self.live.event.connect(self._on_live_event)
         self.notch.media_command.connect(self.live.control)
         self.notch.call_command.connect(self._on_call_command)
@@ -657,6 +660,7 @@ class RotaryApp(QObject):
         self.notch.set_peek(bool(gen.get("notch_peek", False)))
         island = self.cfg.get("island", {})
         self.notch.set_options(island)
+        self.notch.set_position(island.get("position"))
         self.live.configure(island)
         self.notch.set_hotkey(HOTKEY_LABELS.get(gen.get("hotkey", "ctrl+alt+space"), ""))
         self.mouse_trigger.configure(gen.get("mouse_button", "middle"))
@@ -895,19 +899,45 @@ class RotaryApp(QObject):
             pct = data.get("percent", 0)
             self._alert(f"Battery low · {pct}%", "power", RED if pct <= 10 else AMBER, 5.0)
 
+    # Each app's own shortcuts. Discord has no built-in one for leaving a call: Gesture Rotary presses
+    # Ctrl+Shift+H, so give Discord's "Disconnect from voice channel" keybind that key (Settings → Keybinds) —
+    # or set another under "island" → "discord_leave_keys" in config.json.
     CALL_KEYS = {("Discord", "mute"): ("discord", "ctrl+shift+m", ""),
                  ("Discord", "deafen"): ("discord", "ctrl+shift+d", ""),
+                 ("Discord", "accept"): ("discord", "ctrl+enter", ""),
+                 ("Discord", "decline"): ("discord", "esc", ""),
+                 ("Discord", "leave"): ("discord", "ctrl+shift+h", ""),
                  ("Teams", "mute"): ("teams", "ctrl+shift+m", ""),
-                 ("Zoom", "mute"): ("zoom", "alt+a", "Meeting")}
+                 ("Teams", "accept"): ("teams", "ctrl+shift+s", ""),
+                 ("Teams", "decline"): ("teams", "ctrl+shift+d", ""),
+                 ("Teams", "leave"): ("teams", "ctrl+shift+h", ""),
+                 ("Zoom", "mute"): ("zoom", "alt+a", "Meeting"),
+                 ("Zoom", "leave"): ("zoom", "alt+q", "Meeting"),
+                 ("Slack", "leave"): ("slack", "ctrl+shift+h", "")}
+    CALL_APP_IDS = {"Discord": "discord", "Teams": "teams", "Zoom": "zoom", "Slack": "slack",
+                    "WhatsApp": "whatsapp", "Telegram": "telegram", "Signal": "signal"}
 
     def _on_call_command(self, app_name: str, what: str) -> None:
-        """Mute / deafen from the notch's call card: the app's own shortcut, sent to its window."""
+        """The notch's call buttons — mute, deafen, leave, and accept / decline a call ringing in: the app's own
+        shortcut, sent to its window. An app without one for answering is brought to the front instead (decline
+        there just puts the notch's card away)."""
         app_id, keys, title = self.CALL_KEYS.get((app_name, what), ("", "", ""))
-        a = integrations.get(app_id) if app_id else None
+        if app_id and (app_name, what) == ("Discord", "leave"):
+            keys = str(self.cfg.get("island", {}).get("discord_leave_keys") or keys)
+        if what in ("accept", "decline", "leave"):
+            log.info("call: %s in %s", what, app_name)
+        if not app_id:
+            a = integrations.get(self.CALL_APP_IDS.get(app_name, "")) if what == "accept" else None
+            if a is not None:
+                action = a.launch()          # no shortcut to answer: bring the app up to answer it there
+                threading.Thread(target=lambda: self._run_quiet(action), daemon=True).start()
+            return
+        a = integrations.get(app_id)
         if a is None:
             return
         action = a.keys(keys, prefer_title=title)
-        label = {"mute": "Mute", "deafen": "Deafen"}.get(what, what)
+        label = {"mute": "Mute", "deafen": "Deafen", "accept": "Answered", "decline": "Declined",
+                 "leave": "Left the call"}.get(what, what)
 
         def work():
             try:
@@ -916,6 +946,30 @@ class RotaryApp(QObject):
             except Exception as e:
                 self.action_done.emit(f"{app_name} · {label}", False, str(e))
         threading.Thread(target=work, daemon=True).start()
+
+    def _run_quiet(self, action: dict) -> None:
+        try:
+            execute(action, self.cfg)
+        except Exception:
+            log.debug("couldn't run %s", action, exc_info=True)
+
+    def _on_live_state(self, state) -> None:
+        """A call ringing in shows the notch (even with the camera in use) until it's answered or stops."""
+        ring = state.incoming if self.cfg.get("island", {}).get("calls", True) else None
+        if ring != self._ringing:
+            self._ringing = ring
+            self._update_notch()
+
+    def _on_notch_moved(self, pos) -> None:
+        island = self.cfg.setdefault("island", {})
+        if pos is None:
+            if island.pop("position", None) is None:
+                return
+        elif island.get("position") == pos:
+            return
+        else:
+            island["position"] = dict(pos)
+        self._save_timer.start()
 
     def _on_timer_done(self) -> None:
         self.sounds.play("confirm")
@@ -927,7 +981,7 @@ class RotaryApp(QObject):
         mode = self.cfg.get("general", {}).get("notch", "auto")
         if mode == "off":
             return False
-        if mode == "on" or self._assist_showing():
+        if mode == "on" or self._assist_showing() or self._ringing is not None:
             return True
         # auto: when there's no camera to use (switched off, or none found for a few seconds)
         return self._no_cam_since is not None and time.monotonic() - self._no_cam_since > 4.0
@@ -937,11 +991,17 @@ class RotaryApp(QObject):
         wanted = self._notch_wanted()
         # Alerts and screen-assist answers may show over a borderless full-screen game, never an exclusive one.
         alert = time.monotonic() < self._alert_until or (self._assist_showing() and self._fs_state != 3)
+        if self._ringing is not None and self._fs_state != 3 and self.cfg.get("island", {}).get("alerts_over_games",
+                                                                                                 True):
+            alert = True
         show = wanted and (alert or not (self._fullscreen and gen.get("notch_hide_fullscreen", True)))
-        # The live activities keep watching while a game hides the notch, so a saved clip can still pop up.
-        if wanted and not self.live.isRunning():
+        # The live activities keep watching while a game hides the notch, so a saved clip can still pop up. With
+        # the notch away (the camera's in use), they still listen for a call ringing in.
+        listen = wanted or (gen.get("notch", "auto") != "off" and self.cfg.get("island", {}).get("calls", True))
+        self.live.calls_only = not wanted
+        if listen and not self.live.isRunning():
             self.live.start()
-        elif not wanted and self.live.isRunning():
+        elif not listen and self.live.isRunning():
             self.live.stop()
         if show != self.notch.isVisible():
             why = ("on" if show else "off") + f" (setting {gen.get('notch', 'auto')!r}, camera "

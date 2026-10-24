@@ -120,8 +120,11 @@ def test_notch_click_and_wheel():
     got = []
     n.clicked.connect(lambda: got.append("click"))
     n.scrolled.connect(lambda s: got.append(s))
-    n.mousePressEvent(type("E", (), {"button": lambda self: Qt.MouseButton.LeftButton,
-                                     "position": lambda self: QPointF(5, 5)})())
+    ev = type("E", (), {"button": lambda self: Qt.MouseButton.LeftButton, "position": lambda self: QPointF(5, 5),
+                        "globalPosition": lambda self: QPointF(5, 5)})()
+    n.mousePressEvent(ev)
+    assert got == []                           # a click counts when it lets go (a press may start a drag)
+    n.mouseReleaseEvent(ev)
     for dy in (-120, -60, -60, 120):
         ev = QWheelEvent(QPointF(5, 5), QPointF(5, 5), QPoint(0, 0), QPoint(0, dy), Qt.MouseButton.NoButton,
                          Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
@@ -290,3 +293,131 @@ def test_mediapipe_gets_stand_ins_for_what_we_leave_out():
     import importlib
     mod = importlib.import_module("mediapipe.tasks.python.vision.drawing_utils")
     assert not hasattr(mod, "plt")
+
+
+# ------------------------------------------------------------------ moving the notch
+class _Mouse:
+    def __init__(self, pt, button=Qt.MouseButton.LeftButton):
+        self.pt, self.b = QPointF(pt), button
+
+    def button(self):
+        return self.b
+
+    def position(self):
+        return self.pt
+
+    def globalPosition(self):
+        return self.pt
+
+
+def _shown_notch():
+    n = NotchWindow()
+    n.show()
+    n.place()
+    _settle(n)
+    return n
+
+
+def _drag(n, points, release=True):
+    n.mousePressEvent(_Mouse(points[0]))
+    for pt in points[1:]:
+        n.mouseMoveEvent(_Mouse(pt))
+    if release:
+        n.mouseReleaseEvent(_Mouse(points[-1]))
+
+
+def test_notch_slides_along_the_top_and_remembers_where():
+    n = _shown_notch()
+    sr = n._screen_rect()
+    moved, opened = [], []
+    n.moved.connect(moved.append)
+    n.clicked.connect(lambda: opened.append(1))
+    start = n.pos()
+    c = QPointF(start.x() + n.width() / 2, sr.top() + 10)
+    _drag(n, [c, c + QPointF(10, 0), c + QPointF(-80, 0)])
+    n._vel = None
+    n._settle_move()
+    assert n.docked and n.pos().y() == int(sr.top())
+    assert n.pos().x() == start.x() - 80
+    assert opened == []                                   # a drag isn't a click
+    assert moved[-1]["docked"] is True and moved[-1]["x"] == pytest.approx(c.x() - 80, abs=1)
+    n.hide()
+
+
+def test_notch_stretches_then_tears_off_and_merges_back():
+    n = _shown_notch()
+    sr = n._screen_rect()
+    c = QPointF(n.pos().x() + n.width() / 2, sr.top() + 10)
+    _drag(n, [c, c + QPointF(0, 30)], release=False)
+    assert n.docked and n.pull.value > 10 and n._stretch() > 0      # stretched like a drop, still attached
+    n.mouseReleaseEvent(_Mouse(c + QPointF(0, 30)))
+    _settle(n)
+    assert n.docked and n.pull.value == pytest.approx(0, abs=0.5)   # let go: it snaps back up
+    n._settle_move()
+    _drag(n, [c, c + QPointF(0, 40), c + QPointF(0, 200)], release=False)
+    assert not n.docked                                             # torn off
+    assert n.body_rect().top() == pytest.approx(n.FLOAT_PAD * n.s, abs=0.1)
+    path = n._body_path(n.body_rect(), 13)
+    assert path.boundingRect().top() >= n.FLOAT_PAD * n.s - 1      # a free island: nothing reaches the edge
+    n.mouseMoveEvent(_Mouse(c + QPointF(0, 2)))                     # back to the top edge: merges in
+    assert n.docked and n.pos().y() == int(sr.top())
+    n.mouseReleaseEvent(_Mouse(c + QPointF(0, 2)))
+    n.hide()
+
+
+def test_thrown_notch_glides_bounces_and_rests_on_screen():
+    n = _shown_notch()
+    sr = n._screen_rect()
+    n.docked = False
+    n._set_pos(*n._clamp_free(sr.center().x() - n.width() / 2, sr.top() + 120, sr))
+    n._vel = QPointF(3000, 900)
+    n._moving = True
+    moved = []
+    n.moved.connect(moved.append)
+    for _ in range(600):
+        if n._vel is None:
+            break
+        n._fly(1 / 60)
+    assert n._vel is None and not n._moving and moved
+    body_cx = n.pos().x() + n.width() / 2
+    assert sr.left() <= body_cx <= sr.right()
+    assert n.pos().y() + n.height() <= sr.bottom() + 1
+    n.hide()
+
+
+def test_middle_click_sends_the_notch_home():
+    n = _shown_notch()
+    sr = n._screen_rect()
+    n.docked = False
+    n._set_pos(sr.left(), sr.top() + 100)
+    n._settle_move()
+    assert n.position is not None and n.position["docked"] is False
+    moved = []
+    n.moved.connect(moved.append)
+    n.mousePressEvent(_Mouse(QPointF(10, 10), Qt.MouseButton.MiddleButton))
+    assert n.docked and n._glide is not None
+    for _ in range(300):
+        if n._glide is None:
+            break
+        n._tick()
+        n._last -= 1 / 60
+    assert n._glide is None and n.is_home() and moved[-1] is None
+    home = n._screen_rect()
+    assert abs(n.pos().x() + n.width() / 2 - home.center().x()) <= 2 and n.pos().y() == int(home.top())
+    n.hide()
+
+
+def test_saved_position_is_restored():
+    n = NotchWindow()
+    sr = n._screen_rect()
+    n.set_position({"docked": False, "x": sr.left() + 300, "y": sr.top() + 150})
+    n.show()
+    n.place()
+    assert not n.docked
+    assert n.pos().x() + n.width() / 2 == pytest.approx(sr.left() + 300, abs=1)
+    assert n.body_rect().top() + n.pos().y() == pytest.approx(min(sr.top() + 150, sr.bottom() - n.height()
+                                                                  + n.FLOAT_PAD * n.s), abs=1)
+    n.set_position({"x": "nonsense"})                     # junk in config.json: back home
+    n.place()
+    assert n.docked
+    n.hide()
