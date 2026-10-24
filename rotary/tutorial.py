@@ -34,6 +34,7 @@ class Context:
     pinch: bool = True
     finger: bool = True                 # point and swipe / push
     volume: bool = True                 # two fingers up slide the volume
+    resize: bool = True                 # a two-hand pinch resizes the window in front
     dwell_seconds: float = 1.6
     hotkey: str = "Ctrl + Alt + Space"  # '' when off
     assist_key: str = "Win + Alt + A"   # '' when off
@@ -49,7 +50,8 @@ class Context:
                    still_seconds=float(g.get("still_seconds", 3.0)), turn_style=str(g.get("turn_style", "tilt")),
                    pinch=bool(g.get("pinch_click", True)),
                    finger=bool(g.get("finger_swipe", True) or g.get("finger_push", True)),
-                   volume=bool(g.get("volume_slide", True)), dwell_seconds=float(g.get("dwell_seconds", 1.6)),
+                   volume=bool(g.get("volume_slide", True)), resize=bool(g.get("window_resize", True)),
+                   dwell_seconds=float(g.get("dwell_seconds", 1.6)),
                    hotkey=hotkey, assist_key=assist_key, mouse_button=str(gen.get("mouse_button", "middle")),
                    notch=gen.get("notch", "auto") == "on" or (gen.get("notch", "auto") == "auto"
                                                                and not gen.get("camera", True)))
@@ -155,8 +157,8 @@ CORE: list[Step | Callable[[Context], Step]] = [
     lambda ctx: _turn_step(ctx) if ctx.camera else None,
     Step("knob", "Or turn it like a knob",
          "Keep your fist closed and twist it, as if turning a knob. The ring clicks over one item at a time and "
-         "stays there. Open your hand briefly and close it again to re-grip without moving the ring. Point your "
-         "index finger to launch.",
+         "stays there. Hold it turned for a moment and it keeps turning by itself until you turn back. Open your "
+         "hand briefly and close it again to re-grip without moving the ring. Point your index finger to launch.",
          "fist", "tilt", "", "", when=lambda ctx: ctx.camera and ctx.grip),
     lambda ctx: _launch_step(ctx) if ctx.camera else None,
     Step("point", "Point and push",
@@ -167,24 +169,36 @@ CORE: list[Step | Callable[[Context], Step]] = [
          "back", "flip", "close", "Try it: show the back of your hand", when=_camera),
     Step("volume", "Change the volume",
          "Raise your index and middle fingers, keep the others curled, and slide your hand up or down like a "
-         "fader. It works whether the rotary is open or not.",
+         "fader. A volume ring shows up in a corner of the screen, whether the rotary is open or not.",
          "two", "updown", "volume", "Try it: two fingers up, then slide", when=lambda ctx: ctx.camera and ctx.volume),
+    Step("winsize", "Resize a window",
+         "Pinch with both hands, then pull them apart to make the window in front bigger, or push them together "
+         "to make it smaller. Side by side changes the width, one above the other the height, opposite corners "
+         "both. Let go of the pinch to stop.",
+         "pinch", "slide", "", "", when=lambda ctx: ctx.camera and ctx.resize),
     Step("ignored", "What it ignores",
          "So it doesn't open by accident, it ignores a hand that touches your face, moves fast or stretches, "
          "and a fist that didn't start as an open palm. A hand held up in front of your face still works.",
          "palm", "", when=_camera),
     _notch_step,
     Step("mouse", "Turn and click",
-         "Scroll, or drag around the ring, to turn it. Click an item to bring it to the top, then click it again "
-         "(or the centre) to open it. Right-click or Esc goes back or closes. ← → and Enter work too.",
+         "Scroll over the ring, or drag it around, to turn it. Click an item to bring it to the top, then click it "
+         "again (or the centre) to open it. Right-click or Esc goes back or closes. ← → and Enter work too. The "
+         "mouse works on the rotary over any app, even when your hand opened it.",
          "mouse", "", "select", "Try it: scroll while the rotary is open"),
+    Step("notch_move", "Move the notch, take calls",
+         "Drag the notch along the top, or pull it down and put it anywhere; a middle click sends it home. When "
+         "a call rings in (Discord, Teams…) it shows who's calling with Accept and Decline, and Leave while "
+         "you're on it.",
+         "notch", ""),
     Step("modes", "Slides, videos and Quick nav",
          "Over a slideshow the rotary turns into a slides ring, and over a video it scrubs through the video. "
          "Apps marked with a chevron open a second ring of their own actions.",
          "rotary", "", chapter="More"),
     Step("assist", "Screen assist",
-         "Press {assist_key} and an AI reads the question on your screen and answers it on the notch. Choose a "
-         "free service on the Screen assist page.",
+         "Press {assist_key} and an AI reads your screen and answers on the notch: the question on it, or a short "
+         "summary if there isn't one. Hover the notch for the longer answer. Choose a free service on the Screen "
+         "assist page.",
          "keys", "", when=lambda ctx: bool(ctx.assist_key)),
     Step("gestures_later", "Prefer gestures?",
          "Turn the camera on from Home, then replay this tour to learn the hand gestures.",
