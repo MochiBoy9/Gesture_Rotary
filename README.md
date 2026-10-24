@@ -52,6 +52,15 @@ running from source, it just says a new version is out.
 - Optional: `playerctl` for *now playing* on the notch, `speech-dispatcher` or `espeak-ng` for spoken item
   names, and `wmctrl` for items that press a shortcut inside another app.
 
+## The tour
+
+The first time you set the app up, a short tour floats beside the rotary: which hand shapes to use (an open palm,
+a fist, a pinch, a pointed finger, two fingers for the volume), how to put the rotary away, and how to do it all
+without a camera from the notch, the mouse and the keyboard. Each card has a drawing of the hand shape, and when you
+do the gesture it ticks and moves on by itself. Launching an item while the tour is up is only practice, so nothing
+opens. *Skip tour* (or Esc) closes it. Replay it any time with *Take the tour* on *Home* or *General › Help*, or
+*Show the tour* in the tray menu. With the camera off, the tour skips the gestures.
+
 ## Using it (palm toward the camera)
 
 | Do this | Result |
@@ -264,6 +273,7 @@ Everywhere:
 uv run pytest -q                        # gestures, glass, notch, live activities, Quick nav, OBS, screen assist…
 uv run python tools/render_dial.py out  # render rotary states to PNGs
 uv run python tools/render_notch.py out # render the notch's states to one PNG
+uv run python tools/render_tutorial.py out  # render every card of the first-run tour (--mouse: camera off)
 uv run python tools/shot_window.py out  # screenshots of the window's pages
 uv run python tools/selftest.py out     # boot against the real camera, report fps
 uv run python tools/build.py            # build the installer for this system into release/

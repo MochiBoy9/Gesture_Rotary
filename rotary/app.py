@@ -21,7 +21,8 @@ from PySide6.QtGui import (QAction, QActionGroup, QBrush, QColor, QConicalGradie
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
-from . import DATA_DIR, LINUX, MAC, T0, WIN, __version__, assist, integrations, modes, system, update, winapi
+from . import (DATA_DIR, LINUX, MAC, T0, WIN, __version__, assist, integrations, modes, system, tutorial, update,
+               winapi)
 from .actions import (CONFIG_PATH, Item, back_item, build_items, cleanup_scripts, execute, item_from, load_config,
                       save_config)
 from .feedback import Sounds, Speaker
@@ -78,6 +79,10 @@ HK_TOGGLE = 1
 HK_ASSIST = 2
 ASSIST_HOTKEYS = {"win+alt+a": (MOD_WIN | MOD_ALT, 0x41), "ctrl+alt+a": (MOD_CONTROL | MOD_ALT, 0x41),
                   "ctrl+shift+a": (MOD_CONTROL | MOD_SHIFT, 0x41)}
+ASSIST_LABELS = {"win+alt+a": "Win + Alt + A" if WIN else "Super + Alt + A", "ctrl+alt+a": "Ctrl + Alt + A",
+                 "ctrl+shift+a": "Ctrl + Shift + A"}
+if MAC:
+    ASSIST_LABELS = {"ctrl+alt+a": "⌃⌥A", "win+alt+a": "⌥⌘A", "ctrl+shift+a": "⌃⇧A"}
 NAV = {11: (0x25, -1), 12: (0x27, 1), 13: (0x26, -1), 14: (0x28, 1), 15: (0x0D, 0), 16: (0x1B, 0)}  # ← → ↑ ↓ ⏎ Esc
 # While the rotary is open from the mouse or the keyboard: + and − (and the keypad's) turn it into the volume ring
 # and then turn that ring.
@@ -393,6 +398,7 @@ class RotaryApp(QObject):
         self.weather.changed.connect(lambda w: setattr(self.dial.painter_, "weather", self.weather.fresh()))
         self._was_sliding = False
         self._was_at_face = False
+        self.tour = None                   # the first-run tour's card while it's up (ui/tutorial.py)
         self.mouse_trigger = MouseTrigger(self)
         self.mouse_trigger.event.connect(self._on_mouse_trigger)
 
@@ -481,6 +487,8 @@ class RotaryApp(QObject):
             self.show_window()
         else:
             self.window.showMinimized()   # lives on the taskbar
+        if onboarded and not self.cfg.get("general", {}).get("tutorial_done", False):
+            QTimer.singleShot(1500, self.start_tutorial)     # quit half-way through last time: pick it up again
         QTimer.singleShot(2500, self.dial.prewarm)
         QTimer.singleShot(3000, self.media.warm)            # the video ring asks the media controls
         log.info("ready in %.0f ms (camera %s)", (time.perf_counter() - T0) * 1000, "on" if self.camera_on else "off")
@@ -493,12 +501,43 @@ class RotaryApp(QObject):
         self.window.raise_()
         self.window.activateWindow()
 
+    # ------------------------------------------------------------ first-run tour
+    def start_tutorial(self) -> None:
+        """Show the tour (from the start if it's already up). Launching items is only practice meanwhile."""
+        from .ui.tutorial import TutorialWindow
+        if self.tour is not None:
+            self.tour.finished.disconnect()
+            self.tour.end(False)
+            self.tour.deleteLater()
+        gen = self.cfg.get("general", {})
+        hotkey = HOTKEY_LABELS.get(gen.get("hotkey", "ctrl+alt+space"), "")
+        assist_key = ASSIST_LABELS.get((self.cfg.get("assist") or {}).get("hotkey", ""), "")
+        ctx = tutorial.Context.from_config(self.cfg, hotkey, assist_key)
+        ap = self.cfg.get("appearance", {})
+        self.tour = TutorialWindow(tutorial.steps_for(ctx), {"assist": _keycaps(assist_key)},
+                                   reduce_motion=bool(ap.get("reduce_motion", False)))
+        self.tour.finished.connect(self._tutorial_finished)
+        self.tour.start()
+        log.info("tour started (%d cards)", len(self.tour.tour.steps))
+
+    def _tutorial_finished(self, completed: bool) -> None:
+        log.info("tour %s at card %d", "finished" if completed else "skipped", self.tour.tour.index + 1)
+        self.tour.deleteLater()
+        self.tour = None
+        gen = self.cfg.setdefault("general", {})
+        if not gen.get("tutorial_done", False):
+            gen["tutorial_done"] = True
+            self._save_timer.start()
+        if not completed:
+            self._flash_msg("Tour skipped · replay it from Home any time", "dot", BLUE, 3.0)
+
     def _build_tray(self) -> None:
         self.tray = QSystemTrayIcon(tray_icon(True), self)
         self.tray.setToolTip("Gesture Rotary")
         m = QMenu()
         m.addAction("Open Gesture Rotary", self.show_window)
         m.addAction("Open rotary now", self.manual_open)
+        m.addAction("Show the tour", self.start_tutorial)
         m.addSeparator()
         self.cam_menu = m.addMenu("Camera")
         self._fill_camera_menu()
@@ -760,7 +799,10 @@ class RotaryApp(QObject):
             ox, oy = g.x() * k, g.y() * k
         circle = (ox + d.width() / 2 * k, oy + d.height() / 2 * k, radius * k)
         z = d.volume_zone()
-        return circle, ((ox + z.left() * k, oy + z.top() * k, ox + z.right() * k, oy + z.bottom() * k),)
+        zones = [(ox + z.left() * k, oy + z.top() * k, ox + z.right() * k, oy + z.bottom() * k)]
+        if self.tour is not None and self.tour.isVisible():
+            zones.append(_window_zone(self.tour))     # the tour's buttons still take clicks
+        return circle, tuple(zones)
 
     def open_manual(self) -> None:
         """Open the rotary for the mouse and keyboard (shortcut, notch, tray, window button)."""
@@ -1473,6 +1515,8 @@ class RotaryApp(QObject):
             self._prev_center = None
         self._handle(self.engine.update(f, res.t))
         snap = self.engine.snapshot()
+        if self.tour is not None:
+            self.tour.feed_snapshot(snap)
         if snap.sliding and not self._was_sliding:
             self.volume.forget()                 # read the level afresh: something else may have changed it
         self._was_sliding = snap.sliding
@@ -1569,6 +1613,8 @@ class RotaryApp(QObject):
     def _handle(self, events: list) -> None:
         for name, payload in events:
             log.debug("event %s %s", name, payload)
+            if self.tour is not None:
+                self.tour.feed(name)
             if name == "open":
                 self._reset_levels()
                 self._reset_mode()
@@ -1605,7 +1651,9 @@ class RotaryApp(QObject):
                 self.dial.play_execute()
                 self.sounds.play("confirm")
                 self._say(item.name)
-                if item.kind == "assist":
+                if self.tour is not None and self.tour.practice:
+                    self._flash_msg(f"Practice · {item.name} would open now", "done", GREEN, 2.5)
+                elif item.kind == "assist":
                     self.start_assist()
                 else:
                     self._run_action(item)
@@ -1763,6 +1811,32 @@ class RotaryApp(QObject):
 
 
 # --------------------------------------------------------------------------- entry
+def _keycaps(label: str) -> list[str]:
+    """'Win + Alt + A' → ['Win', 'Alt', 'A']; '⌃⌥A' → ['⌃', '⌥', 'A']."""
+    if not label:
+        return []
+    if "+" in label:
+        return [k.strip() for k in label.split("+")]
+    caps = []
+    for ch in label:
+        if ch in "⌃⌥⇧⌘" or not caps or caps[-1] in "⌃⌥⇧⌘":
+            caps.append(ch)
+        else:
+            caps[-1] += ch
+    return caps
+
+
+def _window_zone(w: QWidget) -> tuple[float, float, float, float]:
+    """A window's rectangle in the mouse hook's coordinates (Windows: physical pixels)."""
+    if WIN:
+        r = wintypes.RECT()
+        if winapi.user32.GetWindowRect(wintypes.HWND(int(w.winId())), ctypes.byref(r)):
+            return r.left, r.top, r.right, r.bottom
+    g = w.frameGeometry()
+    k = w.devicePixelRatioF() if LINUX else 1.0
+    return g.left() * k, g.top() * k, (g.right() + 1) * k, (g.bottom() + 1) * k
+
+
 def _instance_key() -> str:
     """One running copy per person: on macOS and Linux the socket sits in the shared /tmp, so another
     account's copy mustn't be mistaken for (or get in the way of) this one."""
