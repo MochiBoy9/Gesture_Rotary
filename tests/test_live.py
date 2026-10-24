@@ -153,8 +153,12 @@ def test_media_card_buttons(monkeypatch):
 
         def position(self):
             return self.pt
+
+        def globalPosition(self):
+            return self.pt
     n.mousePressEvent(Press(n._buttons["next"].center()))
     n.mousePressEvent(Press(QPointF(n.body_rect().left() + 30, 40)))     # the album art: opens the rotary
+    n.mouseReleaseEvent(Press(QPointF(n.body_rect().left() + 30, 40)))
     assert got == ["next"] and opened == [1]
 
 
@@ -214,13 +218,16 @@ def test_call_card_buttons():
     p = QPainter(img)
     n.paint(p)
     p.end()
-    assert set(n._buttons) == {"call_mute", "call_deafen"}
+    assert set(n._buttons) == {"call_mute", "call_deafen", "call_leave"}
     got = []
     n.call_command.connect(lambda app_, what: got.append((app_, what)))
     ev = type("E", (), {"button": lambda self: Qt.MouseButton.LeftButton,
                         "position": lambda self: n._buttons["call_deafen"].center()})()
     n.mousePressEvent(ev)
-    assert got == [("Discord", "deafen")]
+    ev = type("E", (), {"button": lambda self: Qt.MouseButton.LeftButton,
+                        "position": lambda self: n._buttons["call_leave"].center()})()
+    n.mousePressEvent(ev)
+    assert got == [("Discord", "deafen"), ("Discord", "leave")]
 
 
 def test_timer_rings():
@@ -233,3 +240,79 @@ def test_timer_rings():
     n.timer_end = time.monotonic() - 0.1
     n._live_tick()
     assert rang == [1] and n.timer_end is None
+
+
+# ------------------------------------------------------------------ calls ringing in
+def test_incoming_call_titles():
+    assert live.caller_from_title("Incoming call from Alice Smith") == "Alice Smith"
+    assert live.caller_from_title("Incoming video call - Bob") == "Bob"
+    assert live.caller_from_title("Alice Smith is calling... - Microsoft Teams") == "Alice Smith"
+    assert live.caller_from_title("Jane - Incoming Call") == "Jane"
+    assert live.caller_from_title("Incoming call") == ""
+    assert live.caller_from_title("Discord | #general | My Server") is None
+    assert live.caller_from_title("Microsoft Teams") is None
+    assert live.call_app("ms-teams.exe") == "Teams" and live.call_app("chrome.exe") == ""
+
+
+def test_ring_watch_hears_a_ringtone_not_a_ping_or_a_video():
+    procs = {1: "discord.exe", 2: "chrome.exe", 3: "ms-teams.exe"}
+    r = live.RingWatch()
+    assert r.update(procs, [], {1: 0.3}, now=0.0) is None
+    assert r.update(procs, [], {1: 0.3}, now=1.3) is None
+    assert r.update(procs, [], {1: 0.3, 2: 0.5}, now=2.6) == ("Discord", "")      # rings on and on: a call
+    assert r.update(procs, [], {}, now=4.0) == ("Discord", "")                    # a pause in the ringtone
+    assert r.update(procs, [], {}, now=7.0) is None                              # stopped
+    # two message pings a few seconds apart aren't a ring
+    r = live.RingWatch()
+    assert r.update(procs, [], {1: 0.3}, now=0.0) is None
+    assert r.update(procs, [], {1: 0.3}, now=3.0) is None
+    # already in a Discord call: its sounds are the call, not a ring
+    r = live.RingWatch()
+    for t in range(5):
+        assert r.update(procs, [], {1: 0.3}, in_call="Discord", now=float(t)) is None
+    # sound that never pauses for over a minute is a video
+    r = live.RingWatch()
+    for t in range(0, 90, 1):
+        got = r.update(procs, [], {1: 0.3}, now=float(t))
+    assert got is None
+    # an "incoming call" window says who at once
+    r = live.RingWatch()
+    assert r.update(procs, [(3, "Incoming call from Dana Lee")], {}, now=0.0) == ("Teams", "Dana Lee")
+    assert r.update(procs, [(2, "Incoming call from a web page")], {}, now=0.0) is None   # not a call app
+
+
+def test_incoming_call_card_accepts_and_declines():
+    n = NotchWindow()
+    got = []
+    n.call_command.connect(lambda app_, what: got.append((app_, what)))
+    n.set_live(LiveState(incoming=("Teams", "Dana Lee")))
+    assert n.activity() == "ringing" and n._card_kind() == "incoming"     # no hover needed
+    _settle(n)
+    from PySide6.QtGui import QImage, QPainter
+    img = QImage(n.width(), n.height(), QImage.Format.Format_ARGB32_Premultiplied)
+    p = QPainter(img)
+    n.paint(p)
+    p.end()
+    assert {"ring_accept", "ring_decline"} <= set(n._buttons)
+    ev = type("E", (), {"button": lambda self: Qt.MouseButton.LeftButton,
+                        "position": lambda self: n._buttons["ring_decline"].center()})()
+    n.mousePressEvent(ev)
+    assert got == [("Teams", "decline")] and n.incoming() is None and n._card_kind() != "incoming"
+    n.set_live(LiveState(incoming=("Teams", "Dana Lee")))                 # still ringing: stays put away
+    assert n.incoming() is None
+    n.set_live(LiveState())
+    n.set_live(LiveState(incoming=("Discord", "")))                       # the next call shows again
+    assert n.incoming() == ("Discord", "")
+    n.accept_call()
+    assert got[-1] == ("Discord", "accept")
+    n.set_options({"calls": False})
+    n.set_live(LiveState(incoming=("Zoom", "")))
+    assert n.incoming() is None
+
+
+def test_webview_helpers_count_as_their_app():
+    tree = {1: ("ms-teams.exe", 0), 2: ("msedgewebview2.exe", 1), 3: ("msedgewebview2.exe", 2),
+            4: ("msedgewebview2.exe", 99), 5: ("explorer.exe", 0)}
+    names = live.owner_names(tree)
+    assert names[2] == names[3] == "ms-teams.exe"
+    assert names[4] == "msedgewebview2.exe" and names[5] == "explorer.exe"

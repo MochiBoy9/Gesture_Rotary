@@ -181,6 +181,26 @@ def processes() -> dict[int, str]:
     return out
 
 
+def process_tree() -> dict[int, tuple[str, int]]:
+    """pid → (lower-case exe name, parent pid) for every running process (Windows; empty elsewhere)."""
+    if not WIN:
+        return {}
+    snap = kernel32.CreateToolhelp32Snapshot(0x2, 0)
+    if not snap or snap == wintypes.HANDLE(-1).value:
+        return {}
+    out: dict[int, tuple[str, int]] = {}
+    try:
+        e = PROCESSENTRY32W()
+        e.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = kernel32.Process32FirstW(snap, ctypes.byref(e))
+        while ok:
+            out[int(e.th32ProcessID)] = (e.szExeFile.lower(), int(e.th32ParentProcessID))
+            ok = kernel32.Process32NextW(snap, ctypes.byref(e))
+    finally:
+        kernel32.CloseHandle(snap)
+    return out
+
+
 def command_line(pid: int) -> str:
     """A process's command line ('' if it can't be read). Same-user processes only."""
     if not WIN:
@@ -271,6 +291,27 @@ def windows_of(exe_name: str, prefer_title: str = "", include_hidden: bool = Fal
 
     user32.EnumWindows(WNDENUMPROC(cb), 0)
     return [h for _, _, h in sorted(found)]
+
+
+def window_titles() -> list[tuple[int, str]]:
+    """(pid, title) of every visible titled top-level window, front-most first — pop-ups and tool windows too
+    (a call app's "incoming call" toast is one)."""
+    if not WIN:
+        return []
+    out: list[tuple[int, str]] = []
+
+    def cb(hwnd, _lp):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        title = _title(hwnd)
+        if title:
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            out.append((int(pid.value), title))
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(cb), 0)
+    return out
 
 
 def foreground_window() -> int:

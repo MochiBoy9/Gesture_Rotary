@@ -113,6 +113,8 @@ Rows marked *(Windows)* aren't available on macOS / Linux yet.
 | Timers | Right-click → Timer. Counts down on the notch; hover for +1 min / Cancel; chimes when done |
 | Mic & camera | An orange dot while an app uses the microphone, green for the camera (Gesture Rotary itself doesn't count) *(Windows)* |
 | Battery | Plugged in, unplugged, and low-battery alerts on laptops |
+| Calls | Time on a Discord, Teams, Zoom, Slack or other call; hover for Mute (and Deafen) and **Leave** *(Windows)* |
+| A call ringing in | The notch opens by itself, even while you use the camera: who's calling (when the app says) and the app, with **Accept** and **Decline**. Right-click has them too *(Windows)* |
 
 Saved clips and finished timers can pop the notch up briefly over borderless full-screen games (never over
 exclusive full-screen ones). *Look* switches between Dark (like a real notch) and Glass (more see-through).
@@ -128,6 +130,20 @@ exclusive full-screen ones). *Look* switches between Dark (like a real notch) an
 | Click outside it | Closes it |
 
 Hover the notch for a moment with nothing playing on it and it says *Click to open wheel*.
+
+**Moving the notch.** Drag it along the top edge to slide it sideways. Pull it down and it stretches like a drop of
+liquid until it tears off; then put it anywhere. Let go while it's moving and it's thrown: it glides, bounces off
+the sides and bottom of the screen, and merges back into the top edge if it flies (or is dragged) up to it. It
+stays where you left it, next time too. A **middle click** on it (press the scroll wheel) sends it back to the
+middle of the top edge; so does *Put the notch back in the middle* in its right-click menu.
+
+**Calls ringing in** are noticed two ways: a call app's own "incoming call" window (its title says who's calling),
+or a call app — not already in a call — playing its ringtone for a few seconds. *Accept* and *Decline* press the
+app's own shortcuts: Discord Ctrl + Enter / Esc, Teams Ctrl + Shift + S / Ctrl + Shift + D. Apps without one
+(WhatsApp, Telegram, Signal…) are brought to the front to answer there; Decline just puts the card away.
+**Leave** presses Teams' and Slack's Ctrl + Shift + H and Zoom's Alt + Q. Discord has no built-in key for leaving
+a call: give its *Disconnect from voice channel* keybind **Ctrl + Shift + H** (*User Settings → Keybinds*), or
+set the key you use as `"discord_leave_keys"` under `"island"` in config.json.
 
 Under the ring the rotary shows the time (9:41 AM, or 24-hour under *General → Appearance*), the date and the
 weather: an icon for sun, cloud, fog, rain, snow or a storm, and the temperature (°F in the US, °C elsewhere).

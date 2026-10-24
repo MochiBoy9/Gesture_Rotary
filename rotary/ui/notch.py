@@ -9,6 +9,13 @@ Hover it for the details (now playing: art, title, progress and ⏮ ⏯ ⏭); wi
 hover says "Click to open wheel". Click it, or scroll on it, to open the rotary. Right-click for timers, screen
 assist and to customise what it shows.
 
+It can be moved: drag it along the top edge, or pull it down until it tears off like a drop of liquid and put it
+anywhere (throw it and it glides, bouncing off the screen's edges; bring it near the top and it merges back in).
+A middle click (the scroll wheel) sends it home to the middle of the top edge.
+
+A call ringing in (Discord, Teams, …) opens a card on its own: who's calling, Accept and Decline. While on a
+call, hover for Mute / Deafen and Leave.
+
 Screen assist's answers stay on it for a while: the option to pick ("B") in a badge and a short answer;
 hover for the longer, detailed answer, Copy (which copies the detailed one) and Dismiss.
 """
@@ -17,8 +24,9 @@ from __future__ import annotations
 import math
 import sys
 import time
+from dataclasses import replace
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QColor, QCursor, QFont, QFontMetricsF, QGuiApplication, QImage, QLinearGradient,
                            QPainter, QPainterPath, QPen, QPixmap)
 from PySide6.QtWidgets import QMenu, QWidget
@@ -33,8 +41,9 @@ G_PREV, G_PLAY, G_PAUSE, G_NEXT, G_TIMER, G_MUSIC = "", "", "", "", 
 G_PHONE, G_MIC, G_DEAFEN = "\uE717", "\uE720", "\uE74F"
 G_CHECK, G_CLOSE = "\uE73E", "\uE711"
 # What the call card's buttons press in each app (its own shortcuts).
-CALL_BUTTONS = {"Discord": [("mute", "Mute"), ("deafen", "Deafen")], "Teams": [("mute", "Mute")],
-                "Zoom": [("mute", "Mute")]}
+CALL_BUTTONS = {"Discord": [("mute", "Mute"), ("deafen", "Deafen"), ("leave", "Leave")],
+                "Teams": [("mute", "Mute"), ("leave", "Leave")], "Zoom": [("mute", "Mute"), ("leave", "Leave")],
+                "Slack": [("leave", "Leave")]}
 PAUSED_SHOW_SECONDS = 120          # a paused song stays on the notch this long
 HOVER_HINT = "Click to open wheel"
 HOVER_HINT_SECONDS = 0.9           # a hover this long, with nothing else on the notch, shows the hint
@@ -75,7 +84,8 @@ class NotchWindow(QWidget):
     scrolled = Signal(int)           # wheel steps over the notch (+1 = next item)
     media_command = Signal(str)      # "play_pause" | "next" | "previous"
     timer_done = Signal()
-    call_command = Signal(str, str)  # (app, "mute" | "deafen")
+    call_command = Signal(str, str)  # (app, "mute" | "deafen" | "leave" | "accept" | "decline")
+    moved = Signal(object)           # where it was put: {"docked", "x", "y"} (None = back home in the middle)
     customize = Signal()             # "Customise the notch…" from its menu
     assist = Signal()                # "Solve what's on screen" from its menu
 
@@ -87,10 +97,15 @@ class NotchWindow(QWidget):
     MEDIA_CARD = (440.0, 96.0, 30.0)
     TIMER_CARD = (300.0, 64.0, 26.0)
     CALL_CARD = (330.0, 64.0, 26.0)
+    INCOMING_CARD = (390.0, 74.0, 30.0)
     ANSWER_CARD = (500.0, 300.0, 28.0)   # width, tallest, radius (the height follows the text)
     MAX_W = 560.0
     MARGIN = 14.0
     SHOULDER = 8.0
+    FLOAT_PAD = 12.0         # room above a free-floating notch for its shadow
+    TEAR = 70.0              # pull it this far down from the top edge and it comes away
+    DOCK_SNAP = 16.0         # a free notch this close to the top edge merges back into it
+    DRAG_START = 5.0         # a press that moves less than this is a click
 
     def __init__(self):
         super().__init__(None)
@@ -150,7 +165,20 @@ class NotchWindow(QWidget):
         self.press = Spring(0.0, 420.0, 30.0)       # squish on click
         self.lit = Spring(0.0, 200.0, 26.0)
         self.card = Spring(0.0, 320.0, 32.0)        # 0 = compact, 1 = hover card
-        self._springs = (self.w_s, self.h_s, self.r_s, self.fade, self.prog, self.press, self.lit, self.card)
+        self.pull = Spring(0.0, 520.0, 22.0)        # stretched down from the top edge (px), snaps back on release
+        self.wob = Spring(0.0, 300.0, 9.0)          # liquid wobble after tearing off, merging or bouncing
+        self._springs = (self.w_s, self.h_s, self.r_s, self.fade, self.prog, self.press, self.lit, self.card,
+                         self.pull, self.wob)
+
+        # where it is: hanging from the top edge (docked) or floating free; _pos is the window's top-left
+        self.docked = True
+        self.position: dict | None = None           # saved spot (None = home: the middle of the top edge)
+        self._pos = QPointF(0.0, 0.0)
+        self._drag: dict | None = None
+        self._vel: QPointF | None = None            # thrown: px/s
+        self._glide: QPointF | None = None          # on its way home
+        self._moving = False                        # dragged or thrown: no cards, no glass (it'd be stale)
+        self._declined = None                       # the ringing call the user put away
         self._prev_text = ""
         self._t0 = time.perf_counter()
         self._last = time.perf_counter()
@@ -216,6 +244,8 @@ class NotchWindow(QWidget):
                 self._paused_at = time.monotonic()
         else:
             self._paused_at = None
+        if self._declined is not None and state.incoming != self._declined:
+            self._declined = None            # that call stopped ringing: the next one shows again
         self.live = state
         self._retarget()
 
@@ -248,12 +278,101 @@ class NotchWindow(QWidget):
         self.peek = bool(on)
         self._retarget()
 
+    def set_position(self, pos: dict | None) -> None:
+        """Where the user put it last time (from the settings)."""
+        pos = pos if isinstance(pos, dict) and "x" in pos and "y" in pos else None
+        if pos != self.position:
+            self.position = pos
+            if self.isVisible() and self._drag is None and self._vel is None:
+                self.place()
+
     def place(self) -> None:
-        screen = QGuiApplication.primaryScreen()
+        pos = self.position
+        screen = None
+        if pos is not None:
+            try:
+                screen = QGuiApplication.screenAt(QPoint(int(pos["x"]), int(pos["y"]) + 2))
+            except (TypeError, ValueError):
+                screen = None
+        if screen is None:
+            pos = None
+            screen = QGuiApplication.primaryScreen()
         if screen is None:
             return
         g = screen.availableGeometry()
-        self.move(g.center().x() - self.width() // 2 + (1 if g.width() % 2 else 0), g.top())
+        if pos is None or pos.get("docked", True):
+            self.docked = True
+            cx = g.center().x() + (1 if g.width() % 2 else 0) if pos is None else float(pos["x"])
+            self._set_pos(cx - self.width() / 2, g.top())
+        else:
+            self.docked = False
+            self._set_pos(*self._clamp_free(float(pos["x"]) - self.width() / 2,
+                                            float(pos["y"]) - self.FLOAT_PAD * self.s, QRectF(g)))
+
+    def is_home(self) -> bool:
+        return self.position is None
+
+    def go_home(self) -> None:
+        """Back to the middle of the top edge (a middle click, or "Put the notch back" in its menu)."""
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        self._drag, self._vel = None, None
+        g = screen.availableGeometry()
+        target = QPointF(g.center().x() + (1 if g.width() % 2 else 0) - self.width() / 2, g.top())
+        if not self.docked:
+            self.wob.velocity += 6.0
+        self.docked = True
+        self.pull.snap(0.0)
+        self.position = None
+        if self.reduce_motion or not self.isVisible():
+            self._set_pos(target.x(), target.y())
+            self._settle_move()
+        else:
+            self._glide = target
+            self._moving = True
+            self._wake()
+
+    # -- moving it
+    def _set_pos(self, x: float, y: float) -> None:
+        self._pos = QPointF(x, y)
+        self.move(int(round(x)), int(round(y)))
+        self.update()
+
+    def _screen_rect(self, at: QPointF | None = None) -> QRectF:
+        """The work area of the screen the notch is on (or the one under `at`)."""
+        if at is None:
+            at = QPointF(self._pos.x() + self.width() / 2, self._pos.y() + 2)
+        screen = QGuiApplication.screenAt(at.toPoint()) or self.screen() or QGuiApplication.primaryScreen()
+        return QRectF(screen.availableGeometry()) if screen is not None else QRectF(0, 0, 1920, 1080)
+
+    def _clamp_free(self, x: float, y: float, sr: QRectF) -> tuple[float, float]:
+        """A free notch's window position, kept on the screen (its body may hide against an edge, never past it)."""
+        x = max(sr.left() - self.width() / 2, min(sr.right() - self.width() / 2, x))
+        y = max(sr.top() + self.DOCK_SNAP * self.s - self.FLOAT_PAD * self.s + 1,
+                min(sr.bottom() - self.height(), y))
+        return x, y
+
+    def _body_top(self) -> float:
+        return self.pull.value if self.docked else self.FLOAT_PAD * self.s
+
+    def _settle_move(self) -> None:
+        """It came to rest somewhere: remember it, and look at what's behind it again."""
+        self._moving = False
+        self._vel = self._glide = None
+        sr = self._screen_rect()
+        cx = self._pos.x() + self.width() / 2
+        if self.position is not None or abs(cx - (sr.center().x() + (1 if int(sr.width()) % 2 else 0))) > 2 \
+                or not self.docked:
+            self.position = {"docked": self.docked, "x": round(cx, 1),
+                             "y": round(sr.top() if self.docked else self._pos.y() + self.FLOAT_PAD * self.s, 1)}
+        self.moved.emit(self.position)
+        self._refresh_backdrop(force=True)
+        self._retarget()
+
+    def _kick(self, amount: float) -> None:
+        if not self.reduce_motion:
+            self.wob.velocity += amount
 
     # -- timer
     def start_timer(self, seconds: float) -> None:
@@ -309,6 +428,27 @@ class NotchWindow(QWidget):
         self.update()
 
     # ------------------------------------------------------------------ what to show
+    def incoming(self) -> tuple[str, str] | None:
+        """A call ringing in that hasn't been put away: (app, who — "" if unknown)."""
+        inc = self.live.incoming
+        if inc is None or not self.opts["calls"] or inc == self._declined:
+            return None
+        return inc
+
+    def decline_call(self) -> None:
+        inc = self.incoming()
+        if inc is not None:
+            self._declined = inc
+            self.call_command.emit(inc[0], "decline")
+            self._retarget()
+
+    def accept_call(self) -> None:
+        inc = self.incoming()
+        if inc is not None:
+            self._declined = inc            # answered: the card goes (the call card follows when it connects)
+            self.call_command.emit(inc[0], "accept")
+            self._retarget()
+
     def media(self) -> NowPlaying | None:
         m = self.live.media
         if m is None or not self.opts["media"]:
@@ -318,7 +458,9 @@ class NotchWindow(QWidget):
         return m
 
     def activity(self) -> str:
-        """The one live activity the resting notch shows: call > timer > clip recording > now playing."""
+        """The one live activity the resting notch shows: ringing > call > timer > clip recording > now playing."""
+        if self.incoming() is not None:
+            return "ringing"
         if self.opts["calls"] and self.live.call:
             return "call"
         if self.timer_end is not None:
@@ -345,7 +487,12 @@ class NotchWindow(QWidget):
         return self.status_dot and self.status_kind == "warning"
 
     def _card_kind(self) -> str:
-        """Which detailed card a hover shows ('' = none: the resting notch, or a one-line label)."""
+        """Which detailed card a hover shows ('' = none: the resting notch, or a one-line label). A ringing call
+        shows its card without a hover."""
+        if self._moving or self._drag is not None and self._drag["moved"]:
+            return ""
+        if self.incoming() is not None:
+            return "incoming"
         if self.hovered and self.answer is not None:
             return "answer"
         if not self.hovered or self.status_text or self.status_progress is not None:
@@ -356,7 +503,7 @@ class NotchWindow(QWidget):
     # ------------------------------------------------------------------ geometry
     def _resize_window(self) -> None:
         w = int(math.ceil((self.MAX_W + 2 * self.MARGIN) * self.s))
-        h = int(math.ceil((max(self.MEDIA_CARD[1], self.ANSWER_CARD[1]) + self.MARGIN) * self.s))
+        h = int(math.ceil((max(self.MEDIA_CARD[1], self.ANSWER_CARD[1]) + self.MARGIN + self.FLOAT_PAD) * self.s))
         if (w, h) != (self.width(), self.height()):
             self.resize(w, h)
             self._glass_key = None
@@ -376,7 +523,7 @@ class NotchWindow(QWidget):
         act = self.activity()
         if act == "clip":
             return f"Medal is clipping {self.live.clipping}"
-        if act or not self.hint_ready:
+        if act or not self.hint_ready or self._moving:
             return ""
         return HOVER_HINT
 
@@ -401,6 +548,8 @@ class NotchWindow(QWidget):
         side = 0.0
         if act == "timer":
             side = max(46 * s, self._text_width(mmss(self.timer_left()), 12.5) + 14 * s)
+        elif act == "ringing":
+            side = max(46 * s, self._text_width("Ringing", 12.5) + 14 * s)
         elif act == "call":
             side = max(46 * s, self._text_width(mmss(self.call_seconds()), 12.5) + 14 * s)
         elif act in ("media", "clip"):
@@ -454,7 +603,12 @@ class NotchWindow(QWidget):
             return w * s, h * s, r * s, 1.0
         if card == "call":
             w, h, r = self.CALL_CARD
-            return w * s, h * s, r * s, 1.0
+            return max(w * s, 60 * s + 120 * s + self._call_buttons_width()), h * s, r * s, 1.0
+        if card == "incoming":
+            w, h, r = self.INCOMING_CARD
+            who = self.incoming()[1] if self.incoming() else ""
+            text_w = max(self._text_width(who or "Incoming call", 18), self._text_width("Discord · Incoming call", 12))
+            return min(self.MAX_W * s, max(w * s, 66 * s + text_w + 120 * s)), h * s, r * s, 1.0
         label = self._hover_label() if self.hovered else ""
         if label:
             h = self.HOVER_H * s
@@ -482,11 +636,38 @@ class NotchWindow(QWidget):
         w, h = max(8.0, self.w_s.value), max(2.0, self.h_s.value)
         sq = 1.0 - 0.04 * self.press.value
         w, h = w * sq, h * (1.0 - 0.06 * self.press.value)
-        return QRectF(self.width() / 2 - w / 2, 0.0, w, h)
+        wob = max(-0.35, min(0.35, self.wob.value * 0.1))      # squash and stretch
+        stretch = self._stretch()
+        w, h = w * (1.0 + wob - 0.12 * stretch), h * (1.0 - wob + 0.08 * stretch)
+        return QRectF(self.width() / 2 + self._edge_shift(w) - w / 2, self._body_top(), w, h)
+
+    def _stretch(self) -> float:
+        """0…1: how far it's been pulled down from the top edge, towards tearing off."""
+        return max(0.0, min(1.0, self.pull.value / (self.TEAR * self.s * 0.55))) if self.docked else 0.0
+
+    def _edge_shift(self, w: float) -> float:
+        """Near a side of the screen the body slides over inside its window so it stays fully on screen."""
+        if not self.isVisible():
+            return 0.0
+        sr = self._screen_rect()
+        left = self._pos.x() + self.width() / 2 - w / 2
+        pad = 4.0 * self.s
+        if left < sr.left() + pad:
+            return sr.left() + pad - left
+        if left + w > sr.right() - pad:
+            return sr.right() - pad - (left + w)
+        return 0.0
 
     def _body_path(self, rect: QRectF, r: float) -> QPainterPath:
-        """The notch: shoulders curving into the top edge of the screen, rounded at the bottom."""
+        """Docked: shoulders curving into the top edge of the screen, rounded at the bottom (pulled down, a
+        narrowing neck of liquid joins it to the edge). Floating: a rounded island."""
         r = max(1.0, min(r, rect.height(), rect.width() / 2))
+        if not self.docked or rect.top() > 0.5:
+            path = QPainterPath()
+            path.addRoundedRect(rect, min(r, rect.height() / 2), min(r, rect.height() / 2))
+            if self.docked:
+                path = path.united(self._neck(rect))
+            return path
         path = QPainterPath()
         path.addRoundedRect(QRectF(rect.left(), -r - 2, rect.width(), rect.height() + r + 2), r, r)
         sh = min(self.SHOULDER * self.s, rect.height() * 0.7)
@@ -498,6 +679,23 @@ class NotchWindow(QWidget):
                 f.lineTo(x, 0)
                 f.closeSubpath()
                 path = path.united(f)
+        return path
+
+    def _neck(self, rect: QRectF) -> QPainterPath:
+        """The liquid neck between the top edge and a notch being pulled down: thinner the further it goes."""
+        t = self._stretch()
+        cx, top, mid = rect.center().x(), rect.top(), rect.top() + rect.height() * 0.5
+        a = rect.width() / 2 * (0.85 - 0.25 * t) + self.SHOULDER * self.s * (1 - t)   # where it meets the edge
+        b = max(5.0 * self.s, rect.width() / 2 * (0.6 - 0.48 * t))                     # the waist
+        c = rect.width() / 2 * 0.7                                                     # where it meets the body
+        path = QPainterPath()
+        path.moveTo(cx - a, -1.0)
+        path.cubicTo(cx - a, top * 0.35, cx - b, top * 0.2, cx - b, top * 0.5)
+        path.cubicTo(cx - b, top * 0.8, cx - c, top, cx - c, mid)
+        path.lineTo(cx + c, mid)
+        path.cubicTo(cx + c, top, cx + b, top * 0.8, cx + b, top * 0.5)
+        path.cubicTo(cx + b, top * 0.2, cx + a, top * 0.35, cx + a, -1.0)
+        path.closeSubpath()
         return path
 
     # ------------------------------------------------------------------ animation
@@ -517,9 +715,47 @@ class NotchWindow(QWidget):
         dt, self._last = min(now - self._last, 1 / 30), now
         for sp in self._springs:
             sp.step(dt)
+        if self._vel is not None:
+            self._fly(dt)
+        elif self._glide is not None:
+            d = self._glide - self._pos
+            if abs(d.x()) + abs(d.y()) < 0.6:
+                self._set_pos(self._glide.x(), self._glide.y())
+                self._settle_move()
+            else:
+                f = 1.0 - math.exp(-12.0 * dt)
+                self._set_pos(self._pos.x() + d.x() * f, self._pos.y() + d.y() * f)
         self.update()
-        if all(sp.settled for sp in self._springs) and self.status_kind != "pulse":
+        if (all(sp.settled for sp in self._springs) and self.status_kind not in ("pulse",)
+                and self._vel is None and self._glide is None and self._drag is None
+                and self.incoming() is None):
             self._timer.stop()
+
+    def _fly(self, dt: float) -> None:
+        """Thrown: glide with friction, bounce off the sides and bottom, merge into the top edge."""
+        sr = self._screen_rect()
+        v = self._vel
+        x, y = self._pos.x() + v.x() * dt, self._pos.y() + v.y() * dt
+        v = v * math.exp(-3.0 * dt)
+        half = self.width() / 2
+        if x + half < sr.left() or x + half > sr.right():
+            x = max(sr.left() - half, min(sr.right() - half, x))
+            self._kick(min(8.0, abs(v.x()) / 250))
+            v = QPointF(-v.x() * 0.45, v.y())
+        if self.docked:
+            y, v = sr.top(), QPointF(v.x(), 0.0)
+        elif y + self.FLOAT_PAD * self.s <= sr.top() + 2 and v.y() < 0:
+            self.docked = True                       # flew into the top edge: merge with it
+            self._kick(min(9.0, abs(v.y()) / 220))
+            y, v = sr.top(), QPointF(v.x(), 0.0)
+        elif y > sr.bottom() - self.height():
+            y = sr.bottom() - self.height()
+            self._kick(-min(8.0, abs(v.y()) / 250))
+            v = QPointF(v.x(), -v.y() * 0.45)
+        self._vel = v
+        self._set_pos(x, y)
+        if math.hypot(v.x(), v.y()) < 35:
+            self._settle_move()
 
     def _schedule_live(self) -> None:
         """Repaint as often as what's showing needs: sound bars ~12×/s, everything else once a second."""
@@ -544,7 +780,9 @@ class NotchWindow(QWidget):
             self.timer_done.emit()
         if self._paused_at is not None and time.monotonic() - self._paused_at > PAUSED_SHOW_SECONDS + 1:
             self._paused_at = None
-            self.live = LiveState(None, self.live.clipping, self.live.mic, self.live.camera)
+            self.live = replace(self.live, media=None)
+        if self._declined is not None and self.live.incoming != self._declined:
+            self._declined = None            # that call stopped ringing: the next one shows again
         key = (f"{self._clock()}|{mmss(self.timer_left()) if self.timer_end else ''}|"
                f"{mmss(self.call_seconds()) if self.live.call else ''}")
         if key != self._clock_key:
@@ -569,6 +807,9 @@ class NotchWindow(QWidget):
     def hideEvent(self, ev) -> None:
         super().hideEvent(ev)
         self.hovered = False             # no leave event comes for a window that's hidden under the mouse
+        if self._drag is not None:
+            self._drag = None
+            self.pull.snap(0.0)
         self.hint_ready = False
         self._hint_timer.stop()
         self._timer.stop()
@@ -596,15 +837,20 @@ class NotchWindow(QWidget):
     def _glass(self, rect: QRectF, r: float):
         """Refracted backdrop for the current body size (quantised so animation reuses the work)."""
         bd = self._bd
-        if bd is None or self.high_contrast:
-            return None
+        if bd is None or self.high_contrast or self._moving or self._drag is not None and self._drag["moved"]:
+            return None                  # what's behind it changes as it moves: tint only until it settles
         q = 4.0
         w, h = round(rect.width() / q) * q, round(rect.height() / q) * q
-        key = (w, h, round(r), self._bd_ver, self.width())
+        cx, top = round(rect.center().x()), round(rect.top())
+        key = (w, h, round(r), self._bd_ver, self.width(), cx, top, self.docked)
         if key != self._glass_key:
-            cx = self.width() / 2
-            shape = liquid.RoundRect(cx - w / 2, -r - 2, cx + w / 2, h, max(2.0, r),
-                                     bevel=min(14 * self.s, h * 0.5), bend=0.85, magnify=1.02)
+            if self.docked and top <= 0:
+                shape = liquid.RoundRect(cx - w / 2, -r - 2, cx + w / 2, h, max(2.0, r),
+                                         bevel=min(14 * self.s, h * 0.5), bend=0.85, magnify=1.02)
+            else:
+                rr = max(2.0, min(r, h / 2))
+                shape = liquid.RoundRect(cx - w / 2, top, cx + w / 2, top + h, rr,
+                                         bevel=min(14 * self.s, h * 0.5), bend=0.85, magnify=1.02)
             self._glass_brush = liquid.brush(liquid.render(bd, [shape]), bd.f)
             self._glass_key = key
         return self._glass_brush
@@ -651,10 +897,17 @@ class NotchWindow(QWidget):
         big = min(1.0, max(0.0, (rect.height() - self.COLLAPSED[1] * self.s) / (6 * self.s)))   # grown
 
         # shadow (kept tight: every visible pixel catches the mouse)
+        hanging = self.docked and rect.top() <= 0.5
         for i, a in ((5, 0.05), (3, 0.07), (1.5, 0.09)):
             sp = QPainterPath()
-            sp.addRoundedRect(QRectF(rect.left() - i, -r, rect.width() + 2 * i, rect.height() + r + i + 1.5),
-                              r + i, r + i)
+            if hanging:
+                sp.addRoundedRect(QRectF(rect.left() - i, -r, rect.width() + 2 * i, rect.height() + r + i + 1.5),
+                                  r + i, r + i)
+            else:
+                rr = min(r, rect.height() / 2) + i
+                sp.addRoundedRect(rect.adjusted(-i, -i + 1.5, i, i + 1.5), rr, rr)
+                if self.docked:
+                    sp = sp.united(self._neck(rect))
             p.fillPath(sp, black(a * (0.6 if glassy else 1.0)))
 
         # body: the refracted backdrop under a tint — "Dark" is nearly black at rest like a real notch,
@@ -679,7 +932,8 @@ class NotchWindow(QWidget):
         if lit > 0.01:
             p.fillPath(body, qcolor(BLUE, 0.18 * lit))
         p.save()
-        p.setClipRect(QRectF(0, 1.0, self.width(), self.height()))
+        if self.docked:
+            p.setClipRect(QRectF(0, 1.0, self.width(), self.height()))
         if hc:
             p.strokePath(body, QPen(white(0.9), 1.6))
         else:
@@ -702,6 +956,8 @@ class NotchWindow(QWidget):
                 self._paint_timer_card(p, rect)
             elif kind == "call":
                 self._paint_call_card(p, rect)
+            elif kind == "incoming":
+                self._paint_incoming_card(p, rect)
             elif kind == "answer":
                 self._paint_answer_card(p, rect)
         p.restore()
@@ -801,6 +1057,14 @@ class NotchWindow(QWidget):
             t = mmss(self.timer_left())
             p.drawText(QRectF(right - tfm.horizontalAdvance(t) - 2, rect.top(), tfm.horizontalAdvance(t) + 4,
                               rect.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, t)
+        elif act == "ringing":
+            self._phone(p, lead, 9 * s, self._ring_angle())
+            tf, tfm = self._font("text", 12.5 * self.k, QFont.Weight.DemiBold)
+            p.setFont(tf)
+            p.setPen(QColor(GREEN))
+            t = "Ringing"
+            p.drawText(QRectF(right - tfm.horizontalAdvance(t) - 2, rect.top(), tfm.horizontalAdvance(t) + 4,
+                              rect.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, t)
         elif act == "call":
             self._phone(p, lead, 9 * s)
             tf, tfm = self._font("text", 12.5 * self.k, QFont.Weight.DemiBold)
@@ -864,13 +1128,14 @@ class NotchWindow(QWidget):
         p.drawEllipse(c, 4.2 * self.s, 4.2 * self.s)
 
     # -- hover cards
-    def _button(self, p: QPainter, key: str, r: QRectF, glyph: str, big: bool = False, text: str = "") -> None:
+    def _button(self, p: QPainter, key: str, r: QRectF, glyph: str, big: bool = False, text: str = "",
+                tint: str = "") -> None:
         self._buttons[key] = r
         hot = self._hover_button == key
         if hot or text:
             path = QPainterPath()
             path.addRoundedRect(r, r.height() / 2, r.height() / 2)
-            p.fillPath(path, white(0.16 if hot else 0.08))
+            p.fillPath(path, qcolor(tint, 0.95 if hot else 0.78) if tint else white(0.16 if hot else 0.08))
         if text:
             p.setFont(self._font("text", 12 * self.k, QFont.Weight.DemiBold)[0])
             p.setPen(white(0.95))
@@ -1020,13 +1285,60 @@ class NotchWindow(QWidget):
     def call_seconds(self) -> float:
         return max(0.0, time.time() - self.live.call[1]) if self.live.call else 0.0
 
-    def _phone(self, p: QPainter, c: QPointF, rr: float) -> None:
+    def _phone(self, p: QPainter, c: QPointF, rr: float, angle: float = 0.0, color: str = GREEN,
+               hot: bool = False) -> None:
+        """A phone on a coloured circle; turned 135° (and red) it's the hang-up sign."""
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(GREEN))
+        p.setBrush(QColor(color).lighter(118) if hot else QColor(color))
         p.drawEllipse(c, rr, rr)
+        p.save()
+        p.translate(c)
+        p.rotate(angle)
         p.setFont(self._font("icons", rr * 1.05, QFont.Weight.Normal)[0])
         p.setPen(white(1.0))
-        p.drawText(QRectF(c.x() - rr, c.y() - rr, 2 * rr, 2 * rr), Qt.AlignmentFlag.AlignCenter, G_PHONE)
+        p.drawText(QRectF(-rr, -rr, 2 * rr, 2 * rr), Qt.AlignmentFlag.AlignCenter, G_PHONE)
+        p.restore()
+
+    def _ring_angle(self) -> float:
+        """The ringing phone's buzz: short shakes, then a pause."""
+        if self.reduce_motion:
+            return 0.0
+        t = time.perf_counter() - self._t0
+        return 14.0 * math.sin(t * 38.0) if (t % 1.2) < 0.55 else 0.0
+
+    def _call_buttons_width(self) -> float:
+        call = self.live.call
+        labels = [label for _k, label in CALL_BUTTONS.get(call[0], [])] if call else []
+        return sum(self._text_width(label, 12) + 26 * self.s + 8 * self.s for label in labels)
+
+    def _paint_incoming_card(self, p: QPainter, rect: QRectF) -> None:
+        inc = self.incoming()
+        if inc is None:
+            return
+        self._last_card = "incoming"
+        s = self.s
+        app, who = inc
+        cy = rect.top() + rect.height() / 2 + 2 * s
+        self._phone(p, QPointF(rect.left() + 36 * s, cy), 17 * s, self._ring_angle())
+        x = rect.left() + 66 * s
+        rr = 18 * s
+        accept = QPointF(rect.right() - 16 * s - rr, cy)
+        decline = QPointF(accept.x() - 2 * rr - 12 * s, cy)
+        text_w = decline.x() - rr - 10 * s - x
+        sf, sfm = self._font("text", 12 * self.k, QFont.Weight.Normal)
+        tf, tfm = self._font("text", 18 * self.k, QFont.Weight.DemiBold)
+        p.setFont(sf)
+        p.setPen(white(0.62))
+        p.drawText(QRectF(x, cy - tfm.height() / 2 - sfm.height() + 2 * s, text_w, sfm.height()),
+                   Qt.AlignmentFlag.AlignLeft, sfm.elidedText(f"{app} · Incoming call" if who else "Incoming call",
+                                                              Qt.TextElideMode.ElideRight, text_w))
+        p.setFont(tf)
+        p.setPen(white(0.97))
+        p.drawText(QRectF(x, cy - tfm.height() / 2 + 4 * s, text_w, tfm.height()), Qt.AlignmentFlag.AlignLeft,
+                   tfm.elidedText(who or app, Qt.TextElideMode.ElideRight, text_w))
+        for key, c, angle, color in (("ring_decline", decline, 135.0, RED), ("ring_accept", accept, 0.0, GREEN)):
+            self._buttons[key] = QRectF(c.x() - rr, c.y() - rr, 2 * rr, 2 * rr)
+            self._phone(p, c, rr, angle, color, hot=self._hover_button == key)
 
     def _paint_call_card(self, p: QPainter, rect: QRectF) -> None:
         call = self.live.call
@@ -1050,7 +1362,8 @@ class NotchWindow(QWidget):
         bh, right = 28 * s, rect.right() - 16 * s
         for key, label in reversed(CALL_BUTTONS.get(call[0], [])):
             bw = self._text_width(label, 12) + 26 * s
-            self._button(p, f"call_{key}", QRectF(right - bw, cy - bh / 2, bw, bh), "", text=label)
+            self._button(p, f"call_{key}", QRectF(right - bw, cy - bh / 2, bw, bh), "", text=label,
+                         tint=RED if key == "leave" else "")
             right -= bw + 8 * s
 
     def _dial_mark(self, p: QPainter, c: QPointF, rr: float, alpha: float) -> None:
@@ -1126,20 +1439,84 @@ class NotchWindow(QWidget):
         return next((k for k, r in self._buttons.items() if r.adjusted(-3, -3, 3, 3).contains(pt)), "")
 
     def mouseMoveEvent(self, ev) -> None:
-        b = self._button_at(ev.position())
-        if b != self._hover_button:
-            self._hover_button = b
-            self.update()
+        drag = self._drag
+        if drag is None:
+            b = self._button_at(ev.position())
+            if b != self._hover_button:
+                self._hover_button = b
+                self.update()
+            return
+        g = ev.globalPosition()
+        d = g - drag["start"]
+        if not drag["moved"]:
+            if math.hypot(d.x(), d.y()) < self.DRAG_START * self.s:
+                return
+            drag["moved"] = True
+            self._hint_timer.stop()
+            self.hint_ready = False
+            self._retarget()
+        now = time.monotonic()
+        drag["samples"].append((now, g))
+        while len(drag["samples"]) > 2 and now - drag["samples"][0][0] > 0.1:
+            drag["samples"].pop(0)
+        self._drag_to(g)
+
+    def _drag_to(self, g: QPointF) -> None:
+        """Follow the mouse: along the top edge while docked (pulling down stretches it, then it tears off);
+        anywhere once free (back near the top edge, it merges in again)."""
+        drag = self._drag
+        s = self.s
+        d = g - drag["start"]
+        sr = self._screen_rect(g)
+        if self.docked:
+            x = max(sr.left() - self.width() / 2, min(sr.right() - self.width() / 2, drag["pos"].x() + d.x()))
+            dy = g.y() - drag["anchor_y"]
+            if dy < self.TEAR * s:
+                self.pull.snap(max(0.0, dy) * 0.55)
+                self._set_pos(x, sr.top())
+                self._wake()
+                return
+            # tear off: the body stays where the stretched drop was, now free
+            body_top = sr.top() + self.pull.value
+            self.docked = False
+            self.pull.snap(0.0)
+            self._kick(7.0)
+            x, y = self._clamp_free(x, body_top - self.FLOAT_PAD * s, sr)
+            drag["pos"] = QPointF(x - d.x(), y - d.y())
+            self._set_pos(x, y)
+            self._retarget()
+            return
+        x, y = drag["pos"].x() + d.x(), drag["pos"].y() + d.y()
+        if y + self.FLOAT_PAD * s <= sr.top() + self.DOCK_SNAP * s:
+            self.docked = True                       # touched the top edge: merge back in
+            self._kick(-6.0)
+            drag["anchor_y"] = g.y()
+            drag["pos"] = QPointF(x - d.x(), sr.top())
+            self._set_pos(x, sr.top())
+            self._retarget()
+            return
+        x, y = self._clamp_free(x, y, sr)
+        self._set_pos(x, y)
+        self._wake()
 
     def mousePressEvent(self, ev) -> None:
         if ev.button() == Qt.MouseButton.RightButton:
             self._menu()
+            return
+        if ev.button() == Qt.MouseButton.MiddleButton:
+            self.go_home()                           # the scroll wheel's click: back to the middle
             return
         if ev.button() != Qt.MouseButton.LeftButton:
             return
         b = self._button_at(ev.position())
         if b in ("previous", "play_pause", "next"):
             self.media_command.emit(b)
+            return
+        if b == "ring_accept":
+            self.accept_call()
+            return
+        if b == "ring_decline":
+            self.decline_call()
             return
         if b.startswith("call_") and self.live.call:
             self.call_command.emit(self.live.call[0], b[5:])
@@ -1153,13 +1530,52 @@ class NotchWindow(QWidget):
         if b == "answer_copy":
             self.copy_answer()
             return
-        if b == "answer_close" or self.answer is not None:
-            self.clear_answer()                      # a click puts the answer away
+        if b == "answer_close":
+            self.clear_answer()
             return
+        # a click or the start of a drag: which one is decided when it moves or lets go
+        g = ev.globalPosition()
+        self._vel = self._glide = None
+        self._drag = {"start": g, "pos": QPointF(self._pos), "anchor_y": g.y(), "moved": False,
+                      "samples": [(time.monotonic(), g)]}
         self.press.snap(1.0)
         self.press.target = 0.0
         self._wake()
-        self.clicked.emit()
+
+    def mouseReleaseEvent(self, ev) -> None:
+        if ev.button() != Qt.MouseButton.LeftButton or self._drag is None:
+            return
+        drag, self._drag = self._drag, None
+        if not drag["moved"]:
+            if self.answer is not None:
+                self.clear_answer()                  # a click puts the answer away
+            else:
+                self.clicked.emit()
+            return
+        # let go: how fast was it going?
+        (t0, p0), (t1, p1) = drag["samples"][0], drag["samples"][-1]
+        dt = t1 - t0
+        fresh = dt > 0.012 and time.monotonic() - t1 < 0.08      # still moving when it let go
+        v = QPointF((p1.x() - p0.x()) / dt, (p1.y() - p0.y()) / dt) if fresh else QPointF()
+        if self.docked:
+            if v.y() > 900 and self.pull.value > 8 * self.s:
+                # flicked down off the edge: tear off and fly
+                sr = self._screen_rect()
+                self.docked = False
+                self._kick(7.0)
+                self._set_pos(*self._clamp_free(self._pos.x(), sr.top() + self.pull.value - self.FLOAT_PAD * self.s,
+                                                sr))
+                self.pull.snap(0.0)
+            else:
+                self.pull.target = 0.0               # snaps back up into the edge
+                v = QPointF(v.x(), 0.0)
+        if math.hypot(v.x(), v.y()) > 250 and not self.reduce_motion:
+            limit = 4500.0
+            self._vel = QPointF(max(-limit, min(limit, v.x())), max(-limit, min(limit, v.y())))
+            self._moving = True
+            self._wake()
+        else:
+            self._settle_move()
 
     def wheelEvent(self, ev) -> None:
         d = ev.angleDelta()
@@ -1191,6 +1607,17 @@ class NotchWindow(QWidget):
             m.addAction("Pause" if md.playing else "Play", lambda: self.media_command.emit("play_pause"))
             m.addAction("Next", lambda: self.media_command.emit("next"))
             m.addAction("Previous", lambda: self.media_command.emit("previous"))
+        inc = self.incoming()
+        if inc is not None:
+            m.addSeparator()
+            m.addAction(f"Accept the {inc[0]} call", self.accept_call)
+            m.addAction("Decline", self.decline_call)
+        elif self.live.call and any(k == "leave" for k, _l in CALL_BUTTONS.get(self.live.call[0], [])):
+            app = self.live.call[0]
+            m.addSeparator()
+            m.addAction(f"Leave the {app} call", lambda: self.call_command.emit(app, "leave"))
         m.addSeparator()
+        if not self.is_home() or not self.docked:
+            m.addAction("Put the notch back in the middle", self.go_home)
         m.addAction("Customize the notch…", self.customize.emit)
         m.exec(QCursor.pos())
