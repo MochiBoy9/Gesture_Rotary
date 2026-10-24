@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from rotary import actions, apps, integrations, obs, winapi
-from rotary.app import TOUCH_DEPTH, face_contact, hand_at_face, pick_hand
+from rotary.app import FACE_SETTLE, TOUCH_DEPTH, FaceTouch, face_contact, hand_at_face, pick_hand
 from rotary.gestures import extract_features
 from tests.synth import make_hand
 
@@ -229,6 +229,18 @@ def test_face_touch_has_hysteresis():
     f = _feat(center=(0.5, 0.32), size=AT_FACE_SIZE * 1.37)
     assert not hand_at_face(f, [FACE], 4 / 3)
     assert hand_at_face(f, [FACE], 4 / 3, was=True)      # was touching: has to come further forward to let go
+
+
+def test_face_touch_counts_only_once_it_lasts():
+    touch = FaceTouch()
+    on_face = _feat(center=(0.5, 0.32), size=AT_FACE_SIZE)
+    away = _feat(center=(0.8, 0.30), size=AT_FACE_SIZE)
+    assert touch.update(on_face, [FACE], 4 / 3, True, 0.0)[0] is False      # passing by: not yet
+    assert touch.update(away, [FACE], 4 / 3, True, 0.1)[0] is False
+    assert touch.update(on_face, [FACE], 4 / 3, True, 0.2)[0] is False      # the moment starts over
+    assert touch.update(on_face, [FACE], 4 / 3, True, 0.2 + FACE_SETTLE * 0.9)[0] is False
+    assert touch.update(on_face, [FACE], 4 / 3, True, 0.2 + FACE_SETTLE)[0] is True   # resting there
+    assert touch.update(on_face, [FACE], 4 / 3, False, 1.0)[0] is False     # another hand starts afresh
 
 
 def test_face_depth_ignores_how_the_hand_is_turned():

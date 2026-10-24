@@ -60,13 +60,15 @@ running from source, it just says a new version is out.
 | **Hold your palm still** (3 s by default, as low as 0.5 s) | Opens |
 | **Lean** your hand (Tilt), **slide** it (Move), or **turn** it (Follow), then hold | Keeps scrolling until you straighten or return to the middle |
 | **Point** with your index finger, move it aside, hold | Scrolls; **push** toward the camera to click |
-| **Fist**: **tilt** it like turning a knob | Turns one firm click per item and stays there. Open your hand briefly and close it again to re-grip without moving the ring |
+| **Fist**: **tilt** it like turning a knob | Turns one firm click per item and stays there. Open your hand briefly and close it again to re-grip without moving the ring. Or, like an open palm, **hold your fist turned** to one side and it keeps turning by itself until you turn back |
 | Fist: **point** your index finger | Launches the selected item |
 | Open hand for 1.5 s | Back to palm mode: **pinch** or **hold still** on an item launches |
 | Back of the hand, or lower it | Closes |
-| **Index + middle finger up**, slide up or down | Changes the volume, like a fader, whether the rotary is open or not |
+| **Index + middle finger up**, slide up or down | Changes the volume, whether the rotary is open or not: a full-size volume ring appears in a corner of the screen (*Controls → Volume ring corner*) and turns with the level |
 | **Ctrl + Alt + Space** (Mac: **⌃⌥Space**) | Opens from the keyboard: ← → move, Enter launches, Esc closes |
 | **Hold the middle mouse button** | Opens for the mouse, even over a full-screen game (or a side button: *Accessibility*) |
+
+Whenever the rotary is on screen — however you opened it — the mouse works on it directly: **scroll over the ring** to turn it, **drag it around** like a knob, and **click an item or the centre** to launch it. These never reach the app underneath, so it works the same over a browser, a game or the desktop. (On Linux the mouse can turn the ring but the app underneath may see the clicks too.)
 
 ### Slides and videos
 

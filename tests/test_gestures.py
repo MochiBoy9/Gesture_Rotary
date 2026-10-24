@@ -725,3 +725,70 @@ def test_set_position_moves_without_counting_as_a_turn():
     assert s.e.sel_raw == 120 and not s.e.snapshot().interacted
     s.e.set_position(42.4, s.t)
     assert s.e.position == pytest.approx(42.4) and s.e.sel_raw == 42
+
+
+# ------------------------------------------------------------------ short glitches, and a held fist turning on
+def test_palm_hold_survives_a_moment_at_the_face():
+    """Moving the hand out from in front of the face can flicker "touching the face" (or drop a frame or two)
+    for a moment: the hold pauses and carries on instead of starting over."""
+    s = Sim()
+    s.run(2.0)
+    s.run(0.1, feat={"at_face": True})
+    assert s.e.snapshot().arming > 0.6
+    s.run(0.15, absent=True)
+    ev = s.run(1.2)
+    assert s.names(ev) == ["open"] and ev[0][2] == "still"
+    assert ev[0][0] < 3.4                          # 3 s of holding, plus the gaps
+
+
+def test_long_time_at_the_face_still_starts_the_hold_over():
+    s = Sim()
+    s.run(2.0)
+    s.run(0.8, feat={"at_face": True})
+    assert s.e.snapshot().arming == 0.0
+    assert s.run(2.5) == []
+
+
+def test_grab_survives_a_one_frame_glitch():
+    s = Sim()
+    s.run(0.4)
+    s.run(1 / 60, flex=1.0)
+    s.run(2 / 60, flex=1.0, feat={"at_face": True})     # the face test flickers as the fist closes
+    ev = s.run(0.2, flex=1.0)
+    assert s.names(ev) == ["open"] and ev[0][2] == "grip"
+
+
+def test_held_fist_turns_on_by_itself_and_stops_when_it_comes_back():
+    s = grabbed()
+    s.turn(0, 40, seconds=0.3, flex=1.0)              # turned well past the detents, then held there
+    s.run(0.25, roll_deg=40, flex=1.0)
+    sel = s.e.sel_raw
+    ev = s.run(2.0, roll_deg=40, flex=1.0)
+    steps = [e for e in ev if e[1] == "select"]
+    assert len(steps) >= 3
+    assert s.e.sel_raw < sel                          # on in the same direction as the turn
+    stopped = s.e.sel_raw
+    ev = s.turn(40, 0, seconds=0.4, flex=1.0) + s.run(1.0, roll_deg=0, flex=1.0)
+    assert not [e for e in ev if e[1] == "select"]    # coming back stops it without clicking back
+    assert s.e.sel_raw == stopped
+    ev = s.turn(0, 23, seconds=0.3, flex=1.0)         # and the knob follows the hand again
+    assert len([e for e in ev if e[1] == "select"]) == 1
+
+
+def test_held_fist_auto_turn_can_be_switched_off():
+    s = grabbed(grip_auto_seconds=0)
+    s.turn(0, 40, seconds=0.3, flex=1.0)
+    s.run(0.25, roll_deg=40, flex=1.0)
+    sel = s.e.sel_raw
+    s.run(2.0, roll_deg=40, flex=1.0)
+    assert s.e.sel_raw == sel
+
+
+def test_held_fist_auto_turn_stops_at_the_end_of_a_slides_ring():
+    s = Sim(n=8)
+    s.run(3.1)
+    s.e.enter_level(5, s.t, selected=1, limit=(0, 4), fixed_step=26.0)
+    s.run(0.3, flex=1.0)
+    s.turn(0, 50, seconds=0.3, flex=1.0)
+    s.run(3.0, roll_deg=50, flex=1.0)
+    assert s.e.sel_raw == 0

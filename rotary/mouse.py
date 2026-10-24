@@ -6,14 +6,18 @@ A mouse button opens the rotary (Settings → Accessibility → Keyboard & mouse
     click, and pressing it and moving (panning in a 3D app, say) still drags as usual;
   * back / forward: the mouse's side buttons; a click opens the rotary, another closes it.
 
-While the rotary is open from the mouse, the keyboard or the notch, the wheel turns it wherever the pointer
-is, a click outside it closes it, and a right-click goes back. Those clicks and scrolls stop at Gesture Rotary
-and never reach the app underneath, so a full-screen game or video isn't clicked into, scrolled or knocked
-out of full screen. (The rotary's own window never takes the keyboard focus either.)
+Whenever the rotary is on screen, however it was opened (a hand, the mouse, the keyboard, the notch), the mouse
+works on it directly: over the ring the wheel turns it, a press and drag turns it like a knob, a click on an
+item or the centre opens it, and a right-click goes back. These are caught here, before any window sees them,
+so they work the same over a browser, a game or the desktop, and the app underneath never gets them. While
+it's open from the mouse, the keyboard or the notch, the wheel also turns it wherever the pointer is, a click
+outside it closes it, and a right-click goes back; opened by a hand, the mouse outside the ring is left alone.
+(The rotary's own window never takes the keyboard focus either.)
 
 Windows: a low-level mouse hook on its own thread. macOS: a Quartz event tap through pynput (it needs the
 Accessibility permission, like pressing keys). Linux (X11): pynput can watch the mouse but not hold events
-back, so there the clicks and scrolls also reach the app underneath.
+back, so there the clicks and scrolls also reach the app underneath, and a rotary window that takes the mouse
+itself is left to do so.
 
 `MouseLogic` is the decision-making, with no system calls, so it can be tested."""
 from __future__ import annotations
@@ -38,19 +42,29 @@ BUTTONS = {"middle", "back", "forward"}
 class MouseLogic:
     """Feed it mouse events; it says whether to hold each one back from the app underneath and what the rotary
     should do. Events out: "toggle" (open, or close if open), "open", "turn" (±1 per wheel notch: +1 = next
-    item), "close", "back". `replay` is set to "middle" when a held-back quick middle click should be sent
-    on to the app after all."""
+    item), "close", "back". Pointer events out, for pressing and dragging on the rotary: ("press" | "drag" |
+    "release", x, y) in the hook's coordinates. `replay` is set to "middle" when a held-back quick middle click
+    should be sent on to the app after all."""
 
     def __init__(self, button: str = "middle"):
         self.button = button if button in BUTTONS else ""
-        self.active = False                  # the rotary is open for the mouse / keyboard
+        self.active = False                  # the rotary is on screen
+        self.manual = False                  # …opened for the mouse / keyboard: the mouse outside it is ours too
+        self.window = False                  # its own window takes the mouse over it (Linux, mouse / keyboard)
         self.circle: tuple[float, float, float] | None = None     # the rotary on screen: x, y, radius
         self.zones: tuple[tuple[float, float, float, float], ...] = ()   # its other parts: (left, top, right, bottom)
         self._pending: tuple[float, float, float] | None = None   # middle pressed: (time, x, y)
         self._eat_up: set[str] = set()       # swallow these buttons' next release
         self._wheel = 0
+        self.pressed = False                 # the left button went down on the rotary and is still down
         self.replay: str | None = None
         self.out: list[tuple[str, int]] = []
+        self.pointer: list[tuple[str, float, float]] = []
+
+    @property
+    def wants_moves(self) -> bool:
+        """Moves matter only while the middle button is held or the rotary is being dragged."""
+        return self._pending is not None or self.pressed
 
     def _inside(self, x: float, y: float) -> bool:
         c = self.circle
@@ -59,11 +73,17 @@ class MouseLogic:
         return any(z[0] <= x <= z[2] and z[1] <= y <= z[3] for z in self.zones)
 
     def set_active(self, on: bool, circle: tuple[float, float, float] | None = None,
-                   zones: tuple[tuple[float, float, float, float], ...] = ()) -> None:
+                   zones: tuple[tuple[float, float, float, float], ...] = (), manual: bool = True,
+                   window: bool = False) -> None:
         self.active = on
+        self.manual = bool(on and manual)
+        self.window = bool(on and window)
         self.circle = circle if on else None
         self.zones = tuple(zones) if on else ()
         self._wheel = 0
+        if not on and self.pressed:
+            self.pressed = False
+            self._eat_up.add("left")         # its release was never the app's
 
     def tick(self, now: float) -> None:
         """Call regularly (every ~50 ms) while the middle button may be held."""
@@ -73,6 +93,13 @@ class MouseLogic:
             self._eat_up.add("middle")
             if not self.active:
                 self.out.append(("open", 0))
+
+    def _turn(self, delta: int) -> None:
+        self._wheel += delta
+        while abs(self._wheel) >= 120:
+            step = 1 if self._wheel < 0 else -1          # wheel down = next item
+            self._wheel += 120 if self._wheel < 0 else -120
+            self.out.append(("turn", step))
 
     def feed(self, kind: str, button: str = "", x: float = 0.0, y: float = 0.0, delta: int = 0,
              now: float | None = None) -> bool:
@@ -84,7 +111,9 @@ class MouseLogic:
             if p is not None and math.hypot(x - p[1], y - p[2]) > DRAG_PIXELS:
                 self._pending = None          # a drag: give the app its press now; the release follows as usual
                 self.replay = "middle_down"
-            return False
+            if self.pressed:
+                self.pointer.append(("drag", x, y))
+            return False                      # never hold a move back: the pointer would freeze
 
         # the trigger button
         if button and button == self.button:
@@ -109,6 +138,10 @@ class MouseLogic:
                     return True
                 return False
 
+        if kind == "up" and button == "left" and self.pressed:
+            self.pressed = False
+            self.pointer.append(("release", x, y))
+            return True
         if kind == "up" and button in self._eat_up:
             self._eat_up.discard(button)
             return True
@@ -116,59 +149,77 @@ class MouseLogic:
         if not self.active:
             return False
         inside = self._inside(x, y)
+        if inside and self.window:
+            return False                      # the rotary's own window takes the mouse over it
         if kind == "wheel":
+            if not (inside or self.manual):
+                return False                  # opened by a hand: scrolling elsewhere is the app's
+            self._turn(delta)
+            return True
+        if kind == "down":
             if inside:
-                return False                  # the rotary's own window turns itself
-            self._wheel += delta
-            while abs(self._wheel) >= 120:
-                step = 1 if self._wheel < 0 else -1          # wheel down = next item
-                self._wheel += 120 if self._wheel < 0 else -120
-                self.out.append(("turn", step))
-            return True
-        if kind == "down" and not inside:
-            self._eat_up.add(button)
-            self.out.append(("back", 0) if button == "right" else ("close", 0))
-            return True
+                if button == "left":
+                    self.pressed = True
+                    self.pointer.append(("press", x, y))
+                    return True
+                if button == "right":
+                    self._eat_up.add(button)
+                    self.out.append(("back", 0))
+                    return True
+                return False
+            if self.manual:
+                self._eat_up.add(button)
+                self.out.append(("back", 0) if button == "right" else ("close", 0))
+                return True
         return False
 
     def take(self) -> list[tuple[str, int]]:
         out, self.out = self.out, []
         return out
 
+    def take_pointer(self) -> list[tuple[str, float, float]]:
+        out, self.pointer = self.pointer, []
+        return out
+
 
 class MouseTrigger(QObject):
     """Runs MouseLogic against the real mouse and reports to the UI thread through `event`."""
     event = Signal(str, int)
+    pointer = Signal(str, float, float)    # "press" | "drag" | "release" on the rotary, in the hook's coordinates
+    # Windows and macOS hold the events we use back from the app; on Linux they reach it as well.
+    holds_back = sys.platform in ("win32", "darwin")
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.logic = MouseLogic("")
         self._lock = threading.Lock()
         self._backend = None
+        self._failed = False
         self.button = ""
 
     def configure(self, button: str) -> None:
-        """"middle" | "back" | "forward" | "off"."""
+        """"middle" | "back" | "forward" | "off". The mouse keeps working on the rotary either way."""
         button = button if button in BUTTONS else ""
-        if button == self.button:
-            return
         self.button = button
         with self._lock:
             self.logic.button = button
-        if button and self._backend is None:
+        if self._backend is None and not self._failed:
             try:
                 self._backend = _WindowsHook(self) if sys.platform == "win32" else _PynputWatch(self)
             except Exception:
                 log.warning("can't watch the mouse on this system", exc_info=True)
                 self._backend = None
-        elif not button and self._backend is not None:
-            self._backend.stop()
-            self._backend = None
+                self._failed = True       # don't try again on every settings change
+
+    @property
+    def running(self) -> bool:
+        return self._backend is not None
 
     def set_active(self, on: bool, circle: tuple[float, float, float] | None = None,
-                   zones: tuple[tuple[float, float, float, float], ...] = ()) -> None:
+                   zones: tuple[tuple[float, float, float, float], ...] = (), manual: bool = True,
+                   window: bool = False) -> None:
         with self._lock:
-            self.logic.set_active(on, circle, zones)
+            self.logic.set_active(on, circle, zones, manual, window)
 
     def stop(self) -> None:
         if self._backend is not None:
@@ -181,8 +232,11 @@ class MouseTrigger(QObject):
             swallow = self.logic.feed(kind, button, x, y, delta)
             replay = self.logic.replay
             out = self.logic.take()
+            pts = self.logic.take_pointer()
         for name, n in out:
             self.event.emit(name, n)
+        for name, px, py in pts:
+            self.pointer.emit(name, px, py)
         return swallow, replay
 
     def tick(self) -> None:
@@ -239,8 +293,8 @@ class _WindowsHook:
                 try:
                     info = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
                     msg = int(wparam)
-                    if msg == 0x0200 and owner.logic._pending is None:
-                        pass                       # moves only matter while the middle button is held
+                    if msg == 0x0200 and not owner.logic.wants_moves:
+                        pass                       # moves only matter while the middle button is held or dragging
                     elif not (info.flags & 1 and info.dwExtraInfo == TAG):      # not our own replay
                         kind, button = self.MSGS.get(msg, ("", ""))
                         if msg in (0x020B, 0x020C):                               # side buttons
@@ -301,7 +355,7 @@ class _PynputWatch:
         if sys.platform == "darwin":
             kw["darwin_intercept"] = self._intercept
         else:
-            kw.update(on_move=lambda x, y: owner.logic._pending is not None and self._on("move", "", x, y),
+            kw.update(on_move=lambda x, y: owner.logic.wants_moves and self._on("move", "", x, y),
                       on_click=self._on_click,
                       on_scroll=lambda x, y, dx, dy: self._on("wheel", "", x, y, int(dy * 120)))
         self.listener = mouse.Listener(**kw)
@@ -330,7 +384,7 @@ class _PynputWatch:
                  Quartz.kCGEventRightMouseDown: ("down", "right"), Quartz.kCGEventRightMouseUp: ("up", "right"),
                  Quartz.kCGEventOtherMouseDown: ("down", ""), Quartz.kCGEventOtherMouseUp: ("up", ""),
                  Quartz.kCGEventScrollWheel: ("wheel", ""), Quartz.kCGEventMouseMoved: ("move", ""),
-                 Quartz.kCGEventOtherMouseDragged: ("move", "")}
+                 Quartz.kCGEventOtherMouseDragged: ("move", ""), Quartz.kCGEventLeftMouseDragged: ("move", "")}
         kind, button = kinds.get(event_type, ("", ""))
         if not kind:
             return event
