@@ -10,7 +10,7 @@ hover says "Click to open wheel". Click it, or scroll on it, to open the rotary.
 assist and to customise what it shows.
 
 Screen assist's answers stay on it for a while: the option to pick ("B") in a badge and a short answer;
-hover for the explanation, Copy and Dismiss.
+hover for the longer, detailed answer, Copy (which copies the detailed one) and Dismiss.
 """
 from __future__ import annotations
 
@@ -87,7 +87,7 @@ class NotchWindow(QWidget):
     MEDIA_CARD = (440.0, 96.0, 30.0)
     TIMER_CARD = (300.0, 64.0, 26.0)
     CALL_CARD = (330.0, 64.0, 26.0)
-    ANSWER_CARD = (460.0, 150.0, 28.0)   # width, tallest, radius (the height follows the text)
+    ANSWER_CARD = (500.0, 300.0, 28.0)   # width, tallest, radius (the height follows the text)
     MAX_W = 560.0
     MARGIN = 14.0
     SHOULDER = 8.0
@@ -302,8 +302,8 @@ class NotchWindow(QWidget):
     def copy_answer(self) -> None:
         if self.answer is None:
             return
-        choice, text, _detail = self.answer
-        QGuiApplication.clipboard().setText(text or choice)
+        choice, text, detail = self.answer
+        QGuiApplication.clipboard().setText(detail or text or choice)     # the longer answer, when there is one
         self._copied_until = time.monotonic() + 1.5
         QTimer.singleShot(1600, self.update)
         self.update()
@@ -420,8 +420,11 @@ class NotchWindow(QWidget):
         th = self._font("text", 14 * self.k, QFont.Weight.DemiBold)[1].boundingRect(
             QRectF(0, 0, max(40.0, tw), 1000), flags, text).height() if text else 0.0
         th = min(th, 3 * self._font("text", 14 * self.k, QFont.Weight.DemiBold)[1].height())
-        dh = self._font("text", 12 * self.k, QFont.Weight.Normal)[1].boundingRect(
-            QRectF(0, 0, max(40.0, w - lead - 16 * s), 1000), flags, detail).height() if detail else 0.0
+        dfm = self._font("text", 12 * self.k, QFont.Weight.Normal)[1]
+        dw = max(40.0, w - lead - 16 * s)
+        dh = dfm.boundingRect(QRectF(0, 0, dw, 1000), flags, detail).height() if detail else 0.0
+        room = self.ANSWER_CARD[1] * s - (14 * s + max(30 * s, th) + 8 * s + 16 * s)
+        dh = min(dh, max(1, int(room / dfm.lineSpacing())) * dfm.lineSpacing())   # whole lines, up to the card's bottom
         h = 14 * s + max(30 * s, th) + (8 * s + dh if detail else 0.0) + 16 * s
         return th, dh, max(64 * s, min(self.ANSWER_CARD[1] * s, h))
 
