@@ -11,6 +11,16 @@
   sentences with the working, the reasoning or the next steps (the card is taller to fit them).
 - **Copy copies the detailed answer** instead of the short one.
 
+## Unreleased
+
+### Added
+- **Resize windows with both hands.** Pinch with both hands, then pull them apart to make the window in front
+  bigger or push them together to make it smaller. Hands side by side change the width, one above the other the
+  height, and hands at opposite corners change both. It only touches the window in front, and only while it's
+  windowed (not maximised, minimised or full screen); it never goes past the screen or below a usable size.
+  Let go of the pinch to stop, and pinch again to keep going. Turn it off under *Controls → Resize windows*.
+  macOS needs the Accessibility permission; Linux needs `xdotool` (X11 / XWayland apps).
+
 ## [1.10.0] — Gestures in front of your face
 
 ### Changed

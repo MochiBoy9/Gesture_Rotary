@@ -293,6 +293,8 @@ class GestureSettings:
     # volume: index and middle finger up (the others curled), slid up or down like a fader
     volume_slide: bool = True
     volume_distance: float = 0.08     # palm lengths of travel per volume step (2%)
+    # windows: pinch with both hands and stretch or squeeze to resize the window in front
+    window_resize: bool = True
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "GestureSettings":
