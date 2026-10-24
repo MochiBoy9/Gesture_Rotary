@@ -165,12 +165,14 @@ password is encrypted for your Windows account (on a Mac it goes in your Keychai
 
 Press **Win + Alt + A** (Mac: **⌃⌥A**, Linux: **Super + Alt + A**). You can also choose *Screen assist* on the rotary, or right-click the
 notch → *Solve what's on screen*. An AI looks at your screen, finds the question or problem on it and answers
-on the notch:
+on the notch. It always attempts an answer:
 
 - **Multiple choice**: the option to pick in a badge, then its text, e.g. **B** · Mitochondria.
 - **Anything else** (maths, a puzzle, an error message, a bug in code, a form): a short answer, e.g. `x = 4`.
-- **Hover** the answer for a sentence on why, plus *Copy*. **Click** it to put it away. Otherwise it stays
-  for 20 seconds (or 10 / 45 / 90).
+- **No question on screen**: it goes by context clues (what you typed into Google or the address bar, selected
+  text, the window title) or sums up what's there, e.g. a Steam store page → what the game is, its price and reviews.
+- **Hover** the answer for a longer, detailed one (the working, why, next steps), plus *Copy*, which copies that
+  detailed answer. **Click** it to put it away. Otherwise it stays for 20 seconds (or 10 / 45 / 90).
 
 It works with free AI services, or with your own paid account. Pick one on the *Screen assist* page:
 

@@ -996,7 +996,10 @@ class RotaryApp(QObject):
 
         def work():
             try:
-                self.assist_done.emit(assist.solve(shot, cfg), "")
+                app_name, title = modes.foreground()       # context clues for the AI: "steam", "Elden Ring on Steam"
+                if title.lower().startswith("gesture rotary"):
+                    app_name = title = ""                   # our own settings window says nothing about the screen
+                self.assist_done.emit(assist.solve(shot, cfg, app=app_name, title=title), "")
             except assist.AssistError as e:
                 self.assist_done.emit(None, str(e))
             except Exception:
@@ -1010,8 +1013,8 @@ class RotaryApp(QObject):
         if err:
             self._assist_message(err[:110], "error", RED, 6.0)
             return
-        if not ans.found:
-            self._assist_message("No question or problem on screen", "dot", GRAY, 3.5)
+        if not (ans.choice or ans.answer):              # the AI always tries, so this is a blank reply
+            self._assist_message("The AI couldn't make out anything on screen", "dot", GRAY, 3.5)
             return
         seconds = float(assist.settings(self.cfg).get("seconds", 20))
         self._assist_until = time.monotonic() + 1.0

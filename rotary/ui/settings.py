@@ -2204,8 +2204,9 @@ class AssistPage(QWidget):
         how = f"Press {label}, choose" if label and a["hotkey"] != "off" else "Choose"
         self.intro.setText(
             f"{how} Screen assist on the rotary, or right-click the notch, and an AI looks at your screen, finds the "
-            "question or problem on it and answers on the notch. For multiple choice it tells you which option "
-            "(A, B, C…). It works with free AI services, or with your own paid Claude, ChatGPT or Gemini account.")
+            "question or problem on it and answers on the notch; with no question it goes by context clues or sums "
+            "up the screen. For multiple choice it tells you which option (A, B, C…). Hover the answer for a longer, "
+            "detailed one. It works with free AI services, or with your own paid Claude, ChatGPT or Gemini account.")
         self.provider.blockSignals(True)
         self.provider.setCurrentIndex(max(0, self.provider.findData(prov.id)))
         self.provider.blockSignals(False)

@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **Screen assist always attempts an answer.** With no question on screen it goes by context clues (what's typed
+  into a Google search or the address bar, selected text, an error, the app and window title, which are now sent
+  along with the screenshot) and, failing that, sums up the screen: on a Steam store page, what the game is, its
+  price and reviews. *No question or problem on screen* is gone.
+- **Longer, more detailed answers on hover.** The notch still shows the short answer; hovering it now shows a few
+  sentences with the working, the reasoning or the next steps (the card is taller to fit them).
+- **Copy copies the detailed answer** instead of the short one.
+
 ## [1.10.0] — Gestures in front of your face
 
 ### Changed
